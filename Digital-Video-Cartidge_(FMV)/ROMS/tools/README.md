@@ -1,6 +1,6 @@
 # 🛠️ Outils d'Analyse FMV
 
-Ensemble de scripts Python pour analyser, vérifier et reconstruire les ROMs de la carte FMV.
+Scripts Python pour analyser et valider les ROMs de la carte FMV Philips CD-i 205.
 
 ---
 
@@ -8,9 +8,8 @@ Ensemble de scripts Python pour analyser, vérifier et reconstruire les ROMs de 
 
 ```
 tools/
-├── README.md                                 # Ce fichier
-├── check_FMV_entrelacement.py                # 🔑 Détection automatique de l'ordre et extraction des strings
-├── check_FMV_checksum.py                        # Vérification d'intégrité
+├── check_FMV_checksum.py       # Vérification des checksums EPROM
+└── check_FMV_entrelacement.py  # Détection de l'ordre d'entrelacement
 ```
 
 ---
@@ -18,11 +17,11 @@ tools/
 ## 🚀 Utilisation Rapide
 
 ```bash
-# Lancement principal (détection + entrelacement + sauvegarde)
-python check_FMV_entrelacement.py <ROM_A> <ROM_B>
+# Détecter le bon ordre d'entrelacement
+python check_FMV_entrelacement.py <ROM_P7307> <ROM_P7308>
 
-# Vérification d'intégrité
-python check_FMV_checksum.py
+# Vérifier l'intégrité (checksums)
+python check_FMV_checksum.py <ROM_P7307> <ROM_P7308>
 ```
 
 ---
@@ -30,23 +29,22 @@ python check_FMV_checksum.py
 ## 🔑 Outil Principal : `check_FMV_entrelacement.py`
 
 ### Résumé
-Script de détection automatique de l'ordre d'entrelacement des deux EPROMs de la carte FMV.
+Entrelace les deux EPROMs dans les deux ordres possibles, extrait les chaînes ASCII lisibles et détermine automatiquement le bon ordre via un score de mots-clés.
 
 ### Usage
 ```bash
-python check_FMV_entrelacement.py "ROM_P7307.bin" "ROM_P7308.bin"
+python check_FMV_entrelacement.py <ROM_A> <ROM_B>
 ```
 
-### Entrées
 | Paramètre | Description |
 |-----------|-------------|
-| `ROM_A` | Chemin vers la ROM P7307 (checksum 0x4BA9) |
-| `ROM_B` | Chemin vers la ROM P7308 (checksum 0xFFD9) |
+| `ROM_A` | Chemin vers la ROM P7307 (checksum `0xFFD9`) |
+| `ROM_B` | Chemin vers la ROM P7308 (checksum `0x4BA9`) |
 
 ### Fonctionnement
 
-1. **Lecture** des deux fichiers ROM (32 Ko chacun)
-2. **Calcul** des checksums 16-bit à l'offset 0x7FBE
+1. **Lecture** des deux fichiers ROM (64 Ko chacun)
+2. **Calcul** des checksums 16-bit pour identification
 3. **Test** des deux ordres d'entrelacement possibles :
    - Ordre 1 : `A(P7307)=MSB / B(P7308)=LSB`
    - Ordre 2 : `B(P7308)=MSB / A(P7307)=LSB`
@@ -57,37 +55,45 @@ python check_FMV_entrelacement.py "ROM_P7307.bin" "ROM_P7308.bin"
 
 ### Sortie
 ```
-======================================================================
+═══════════════════════════════════════════════════════════════
   ENTRELACEMENT FMV - DÉTECTION DU BON ORDRE D'OCTETS
-======================================================================
-📄 ROM A : FMV 4BA9 P7307 R4.1 VMPEG.BIN (65536 octets)
-📄 ROM B : FMV FFD9 P7308 R4.1 VMPEG.BIN (65536 octets)
-🔐 Checksum A : 0x4BA9
-🔐 Checksum B : 0xFFD9
+═══════════════════════════════════════════════════════════════
+
+🔐 Checksum A : 0xFFD9
+🔐 Checksum B : 0x4BA9
 
 ── Ordre 1 : A(MSB), B(LSB) ──
-   Score mots-clés : 0
+   Chaînes trouvées : X
+   Score mots-clés  : 0
 
 ── Ordre 2 : B(MSB), A(LSB) ──
-   Score mots-clés : 89
+   Chaînes trouvées : Y
+   Score mots-clés  : 89
    Mots-clés : MPEG×2, FMV×42, ERROR×15, ...
 
+═══════════════════════════════════════════════════════════════
+  RÉSULTAT
+═══════════════════════════════════════════════════════════════
+
 ✅ BON ORDRE : B(P7308)=MSB / A(P7307)=LSB
-💾 Fichier sauvegardé : FMV_combined_7308hi_7307lo.bin
+
+💾 Fichier entrelacé sauvegardé :
+   FMV_combined_7308hi_7307lo.bin
+   131072 octets ✅
 ```
 
 ### Fichiers générés
 | Fichier | Contenu |
 |---------|---------|
-| `FMV_combined_*.bin` | ROM entrelacée complète (64 Ko) |
-| `FMV_strings_*.txt` | Toutes les chaînes ASCII extraites |
+| `FMV_combined_*.bin` | ROM entrelacée complète (128 Ko) |
+| `FMV_combined_strings.txt` | Liste des chaînes ASCII détectées |
 
 ---
 
 ## 📋 `check_FMV_checksum.py`
 
 ### Résumé
-Vérifie les checksums des EPROMs.
+Calcule les checksums des deux EPROMs et les compare aux valeurs de référence (`0xFFD9` et `0x4BA9`).
 
 ### Usage
 ```bash
@@ -95,21 +101,19 @@ python check_FMV_checksum.py <ROM_A> <ROM_B>
 ```
 
 ### Contrôles
-- ✅ Checksum P7307 = `0x4BA9`
-- ✅ Checksum P7308 = `0xFFD9`
+- ✅ Checksum P7307 = `0xFFD9`
+- ✅ Checksum P7308 = `0x4BA9`
 
 ### Sortie
 ```
-P7307 checksum : 0x4BA9 ✅
-P7308 checksum : 0xFFD9 ✅
+P7307 checksum : 0xFFD9 ✅
+P7308 checksum : 0x4BA9 ✅
 ```
 
 ---
 
 ## 📌 Notes
 
-- Tous les scripts supportent les chemins **Windows** (`\`) et **Unix** (`/`)
 - Les scripts sont compatibles **Python 3.8+**
-- Aucune modification des ROMs originales — seul le fichier combiné est créé
-
-Pour plus de détails, voir la documentation dans `../docs/`.
+- Chaque EPROM individuelle fait **64 Ko** (65 536 octets)
+- La ROM entrelacée complète fait **128 Ko** (131 072 octets)
