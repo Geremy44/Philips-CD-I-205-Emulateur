@@ -1,0 +1,9 @@
+# Ignorer les fichiers BIN et HEX (éviter l'upload de ROMs/copyright)
+*.BIN
+*.bin
+*.HEX
+*.hex
+
+# Exemples :
+# path/to/file.BIN
+# ROMs/*.HEX
