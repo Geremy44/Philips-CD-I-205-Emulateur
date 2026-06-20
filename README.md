@@ -1,170 +1,63 @@
-# 🧠⚡ PHILIPS CD-i 205 EMULATOR
-### _[ rétro-ingénierie de la machine // reconstruction du passé ]_
+# Philips CD-i 205 Émulateur
 
-<p align="center">
-  <img src="https://img.shields.io/badge/statut-reverse%20engineering-ff00ff?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/coeur-non%20implémenté-ff0033?style=for-the-badge" />
-  <img src="https://img.shields.io/badge/cible-CD--i205-00ffff?style=for-the-badge" />
-</p>
+![Status](https://img.shields.io/badge/status-recherche_active-yellow)
+![Lang](https://img.shields.io/badge/lang-Python%20%7C%20C%2FC%2B%2B-blue)
 
----
+Émulateur complet pour la console **Philips CD-i 205**, développé à partir de matériel authentique.
 
-<p align="center">
-  <img src="https://media.giphy.com/media/xT9IgzoKnwFNmISR8I/giphy.gif" width="500"/>
-</p>
+> **⚠️ État actuel :** Ce projet est en phase de **rétro-ingénierie** et d'analyse des ROMs.  
+> Le cœur d'émulation en C/C++ n'est pas encore commencé.
 
 ---
 
-## 🧬 APERÇU DU SYSTÈME
+## 🎯 Objectif
 
-```
-> séquence de boot inconnue
-> matériel partiellement cartographié
-> pipeline vidéo fragmenté
-> cartouche fmv en cours d’analyse
-```
+Émuler fidèlement la **Philips CD-i 205** que je possède, ainsi que son extension **Full Motion Video (FMV)** (*Digital Video Cartridge*).
 
-ce projet vise à reconstruire une **Philips CD-i 205** à partir de données brutes  
-aucun sdk. aucune doc exploitable. aucun raccourci.
-
-seulement :
-- des ROMs dumpées
-- du désassemblage
-- du comportement hardware
+Le firmware BIOS de la console principale n'étant pas encore dumpé, la recherche débute par l'étude de la **carte FMV**, qui dispose de sa propre ROM et d'une architecture indépendante.
 
 ---
 
-## ⚡ MISSION
-
-```
-[1] extraire du signal à partir du silence
-[2] décoder une logique propriétaire
-[3] émuler l’inémulé
+## 🗂️ Structure du dépôt
+```text
+Philips-CD-I-205-Emulateur/
+├── Digital-Video-Cartridge_(FMV)/   # Recherches, dumps et notes sur la carte FMV
+├── tools/                           # 🐍 Scripts Python d'analyse de ROMs (en cours)
+├── src/                             # ⏳ (à venir) Cœur d'émulation C/C++
+└── docs/                            # Documentation technique et découvertes
 ```
 
 ---
 
-## 🧠 ÉTAT ACTUEL
+## 🛠️ Stack technique
 
-```
-analyse ROM        ████████░░░░░░░░░░
-reverse engineering ██████░░░░░░░░░░░░
-cartographie hw    ███░░░░░░░░░░░░░░░
-coeur émulation    ░░░░░░░░░░░░░░░░░░
-```
-
----
-
-## 📼 CARTOUCHE FMV — CIBLE PRINCIPALE
-
-```
-> hardware vidéo dédié
-> décodage mpeg (comportement non standard)
-> agit comme coprocesseur
-> encore partiellement inconnu
-```
-
-ce composant est le **principal verrou technique**
+| Phase | Langage | Outils | Statut |
+|-------|---------|--------|--------|
+| Analyse ROMs | Python 3 | Scripts maison | 🟡 En cours |
+| Reverse Engineering | - | Ghidra | 🟡 En cours |
+| Cœur émulation | C / C++ | CMake (prévu) | 🔴 Non commencé |
 
 ---
 
-## 🗂 STRUCTURE
+## 🚀 Feuille de route
 
-```
-.
-├── Digital-Video-Cartridge_(FMV)/
-├── tools/
-├── docs/
-└── README.md
-```
-
----
-
-## 🛠 OUTILS
-
-```
-RÉTRO-INGÉNIERIE → GHIDRA
-SCRIPTS          → PYTHON 3
-FUTUR COEUR      → C / C++
-```
+- [x] Acquisition et documentation du matériel (CD-i 205 + carte FMV)
+- [ ] Analyse approfondie de la ROM de la carte FMV
+- [ ] Dump du BIOS de la console principale
+- [ ] Développement du CPU core (Motorola 68000)
+- [ ] Implémentation des sous-systèmes audio / vidéo / CD
+- [ ] Émulation de la carte FMV (décodage MPEG)
+- [ ] Interface utilisateur (GUI)
 
 ---
 
-## 🧪 EXÉCUTION
+## ⚠️ Informations légales
 
-```
-python tools/analyze_rom.py rom.bin
-```
-
----
-
-## ⚠️ AVERTISSEMENT
-
-```
-aucun émulateur fonctionnel
-aucun boot
-aucune sortie vidéo
-```
-
-phase actuelle : **recherche pure**
+Ce dépôt ne contient **aucun BIOS, firmware ou ROM sous copyright**.  
+Chaque utilisateur devra utiliser ses propres dumps extraits de son matériel original.
 
 ---
 
-## 🕶 PHILOSOPHIE
+## 🙏 Remerciements
 
-```
-ne pas imiter
-ne pas approximer
-tout comprendre
-```
-
----
-
-## 📡 JOURNAL
-
-```
-[2026-06-18] début extraction ROM
-[2026-06-19] premières passes de désassemblage
-[2026-06-20] identification routines vidéo
-```
-
----
-
-## ⚖️ LÉGAL
-
-```
-aucun bios fourni
-aucun contenu propriétaire inclus
-dump matériel personnel requis
-```
-
----
-
-## 🧠 FAITS CONNUS
-
-```
-> cpu: motorola 68000
-> support: cd interactif
-> vidéo: mpeg assisté matériel
-> documentation: quasi inexistante
-```
-
----
-
-<p align="center">
-  <img src="https://media.giphy.com/media/26tn33aiTi1jkl6H6/giphy.gif" width="400"/>
-</p>
-
----
-
-## 🧩 STATUT FINAL
-
-```
-[ MODE RECHERCHE ACTIF ]
-[ SYSTÈME NON MAÎTRISÉ ]
-[ RECONSTRUCTION EN COURS ]
-```
-
----
-
-### // EOF
+- Merci à **Claude code**.
