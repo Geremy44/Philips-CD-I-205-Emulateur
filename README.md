@@ -2,7 +2,6 @@
 
 ![Status](https://img.shields.io/badge/status-recherche_active-yellow)
 ![Lang](https://img.shields.io/badge/lang-Python%20%7C%20C%2FC%2B%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
 
 Émulateur complet pour la console **Philips CD-i 205**, développé à partir de matériel authentique.
 
