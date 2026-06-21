@@ -1,63 +1,121 @@
-# Philips CD-i 205 Émulateur
+# Philips CD-i 205 — Émulateur
 
-![Status](https://img.shields.io/badge/status-recherche_active-yellow)
-![Lang](https://img.shields.io/badge/lang-Python%20%7C%20C%2FC%2B%2B-blue)
-
-Émulateur complet pour la console **Philips CD-i 205**, développé à partir de matériel authentique.
-
-> **⚠️ État actuel :** Ce projet est en phase de **rétro-ingénierie** et d'analyse des ROMs.  
-> Le cœur d'émulation en C/C++ n'est pas encore commencé.
+> ⚠️ **Avertissement légal** — Ce projet ne fournit aucune ROM, BIOS ni logiciel sous copyright. Philips conserve tous les droits sur ses œuvres. Les fichiers `.bin`, `.rom` et `.iso` **ne doivent jamais** être committés (voir `.gitignore`). Ce dépôt ne contient que des outils d'analyse et de documentation de reverse-engineering à des fins éducatives.
 
 ---
 
 ## 🎯 Objectif
 
-Émuler fidèlement la **Philips CD-i 205** que je possède, ainsi que son extension **Full Motion Video (FMV)** (*Digital Video Cartridge*).
+Émulateur fonctionnel du **Philips CD-i 205**, ordinateur de salon basé sur un Motorola 68070, exécutant l'OS **CD-RTOS** (dérivé d'OS-9 68k), avec support de la **Digital Video Cartridge** (cartouche FMV) pour la lecture de vidéo MPEG-1.
 
-Le firmware BIOS de la console principale n'étant pas encore dumpé, la recherche débute par l'étude de la **carte FMV**, qui dispose de sa propre ROM et d'une architecture indépendante.
+**Plateforme cible** : Linux / macOS / Windows (Python + libSDL2)
 
 ---
 
-## 🗂️ Structure du dépôt
-```text
+## 📂 Arborescence réelle du dépôt
+
+```
 Philips-CD-I-205-Emulateur/
-├── Digital-Video-Cartridge_(FMV)/   # Recherches, dumps et notes sur la carte FMV
-├── tools/                           # 🐍 Scripts Python d'analyse de ROMs (en cours)
-├── src/                             # ⏳ (à venir) Cœur d'émulation C/C++
-└── docs/                            # Documentation technique et découvertes
+├── README.md                        ← ce fichier
+├── .gitignore
+│
+├── docs/                            ← documentation de recherche
+│   ├── console/                    ← AXE A : console CD-i 205
+│   │   ├── CONSOLE_OVERVIEW.md     ← vue d'ensemble matériel
+│   │   └── CONSOLE_MMIO_MAP.md     ← carte MMIO console
+│   └── fmv/                       ← AXE B : cartouche FMV
+│       ├── FMV_OS9_FINDINGS.md     ← reverse-engineering modules OS-9
+│       └── FMV_MMIO_MAP.md         ← carte MMIO cartouche FMV
+│
+├── tools/                          ← scripts d'analyse
+│   └── README.md
+│
+└── src/                           ← code source de l'émulateur (WIP)
+    └── ...                        ← à venir
 ```
 
 ---
 
-## 🛠️ Stack technique
+## 🔬 Deux axes de recherche
 
-| Phase | Langage | Outils | Statut |
-|-------|---------|--------|--------|
-| Analyse ROMs | Python 3 | Scripts maison | 🟡 En cours |
-| Reverse Engineering | - | Ghidra | 🟡 En cours |
-| Cœur émulation | C / C++ | CMake (prévu) | 🔴 Non commencé |
+Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 
----
+### Axe A — CONSOLE (CD-i 205)
+> Le matériel de base, commun à tous les modèles CD-i.
 
-## 🚀 Feuille de route
+- **CPU** : Motorola 68070 @ 15 MHz (68000 + périphériques intégrés)
+- **Vidéo** : contrôleur VSD + MCD212 (Dual Plane Display Controller)
+- **Audio** : ADPCM PCM/FSCM, DAC stéréo
+- **Système** : CD-RTOS (OS-9/68000), NVRAM, lecteur CD + contrôleur CDIC
+- **Fichiers** : `docs/console/`
 
-- [x] Acquisition et documentation du matériel (CD-i 205 + carte FMV)
-- [ ] Analyse approfondie de la ROM de la carte FMV
-- [ ] Dump du BIOS de la console principale
-- [ ] Développement du CPU core (Motorola 68000)
-- [ ] Implémentation des sous-systèmes audio / vidéo / CD
-- [ ] Émulation de la carte FMV (décodage MPEG)
-- [ ] Interface utilisateur (GUI)
+### Axe B — CARTOUCHE FMV (Digital Video Cartridge)
+> L'accessoire enfichable optionnel, décodant le MPEG-1.
 
----
+- **Modules OS-9** : `fmvdrv`, `fmvll`, `csd_fmvvm`…
+- **Décodeur** : chip MPEG-1 (SGS-Thomson ?), MMIO dédié `$E80000–$EFFFFF`
+- **Handshake** : IRQ dédiée, registre de contrôle `$C0`
+- **Fichiers** : `docs/fmv/`
 
-## ⚠️ Informations légales
-
-Ce dépôt ne contient **aucun BIOS, firmware ou ROM sous copyright**.  
-Chaque utilisateur devra utiliser ses propres dumps extraits de son matériel original.
+> ⚠️ **Règle de délimitation** : les地址 `$E80000–$EFFFFF` sont **réservées à la FMV**. La console ne doit jamais y accéder.
 
 ---
 
-## 🙏 Remerciements
+## 📊 Tableau d'avancement
 
-- Merci à **Claude code**.
+### Axe Console — recherche à démarrer
+| Tâche | État |
+|-------|------|
+| Extraction ROM CD-RTOS | 🔲 À démarrer |
+| Cartographie mémoire complète | 🔲 À démarrer |
+| Reverse-engineering MCD212 | 🔲 À démarrer |
+| Analyse CDIC | 🔲 À démarrer |
+| Implémentation timers 68070 | 🔲 À démarrer |
+| Implémentation UART | 🔲 À démarrer |
+| Émulation NVRAM | 🔲 À démarrer |
+| Émulation DMA audio | 🔲 À démarrer |
+
+### Axe FMV — recherche avancée
+| Tâche | État |
+|-------|------|
+| Dump & analyse désentrelacé | ✅ Terminé |
+| Extraction des 15 modules OS-9 | ✅ Terminé |
+| Analyse fmvll : table d'init @ $1EE0 | ✅ Terminé |
+| Analyse fmvdrv : dispatcher + codes | ✅ Terminé |
+| Cartographie MMIO $E80000–$EFFFFF | ✅ Terminé |
+| Routine IRQ @ $022E | ✅ Terminé |
+| Chaîne d'appel complète | ✅ Terminé |
+| Décodage des 24 codes SetStat | 🔲 À confirmer |
+| Identification chip MPEG | 🔲 À démarrer |
+| Reverse-engineering csd_fmvvm | 🔲 À démarrer |
+| Émulation buffer vidéo MPEG | 🔲 À démarrer |
+| Synchronisation audio/vidéo | 🔲 À démarrer |
+
+---
+
+## 🚀 Pour commencer
+
+1. **Cloner le dépôt**
+   ```bash
+   git clone https://github.com/Geremy44/Philips-CD-I-205-Emulateur.git
+   cd Philips-CD-I-205-Emulateur
+   ```
+
+2. **Explorer la documentation**
+   - Console : `docs/console/CONSOLE_OVERVIEW.md`
+   - FMV : `docs/fmv/FMV_OS9_FINDINGS.md`
+
+3. **Utiliser les outils d'analyse**
+   ```bash
+   cd tools && python os9_module_parser.py --help
+   ```
+
+---
+
+## 📄 Licence
+
+Documentation de reverse-engineering à fins éducatives uniquement. Voir avertissement légal en tête de fichier.
+
+---
+
+*Dernier mise à jour : 21 juin 2026*

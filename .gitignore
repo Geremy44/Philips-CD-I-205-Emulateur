@@ -1,9 +1,61 @@
-# Ignorer les fichiers BIN et HEX (éviter l'upload de ROMs/copyright)
-*.BIN
-*.bin
-*.HEX
-*.hex
+# =============================================================================
+# .gitignore — Philips CD-i 205 Émulateur
+# =============================================================================
 
-# Exemples :
-# path/to/file.BIN
-# ROMs/*.HEX
+# ⛔ ROMs & images CD-i — COPYRIGHT Philips — NE JAMAIS COMMITTER
+# -----------------------------------------------------------------------------
+*.bin          # dumps ROM / firmware
+*.rom          # fichiers ROM
+*.iso          # images CD-ROM ISO9660
+*.img          # images disque
+ROMS/          # dossier local contenant les dumps
+roms/          # variants minuscules
+Firmware/      # dossier firmware
+firmware/      #
+
+# ⛔ Fichiers temporaires système
+# -----------------------------------------------------------------------------
+.DS_Store          # macOS
+Thumbs.db          # Windows
+*~                 # backup Emacs/vim
+*.swp              # vim swap
+*.swo              # vim
+*.bak              # backups
+
+# 🐍 Python
+# -----------------------------------------------------------------------------
+__pycache__/           # cache bytecode
+*.py[cod]              # bytecode compilé
+*.pyc
+*.pyo
+*.pyd
+.venv/                 # environnement virtuel
+venv/
+ENV/
+env/
+*.egg-info/            # setuptools
+dist/                  # build wheels
+build/                 # build artifacts
+.pip-wheel-metadata
+
+# 📦 Node (si applicable plus tard)
+# -----------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 🛠️ IDE
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# 📝 Logs & exports
+# -----------------------------------------------------------------------------
+*.log
+*.trace
+output/
+dump/
