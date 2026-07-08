@@ -1,0 +1,296 @@
+======================================================================
+CORRELATION DIGEST — Philips CD-i 205 System ROM PS-7211 REL.2.1
+Firmware file: CDI205-00_PS-7211_REL.2.1.hex (Intel HEX, 512 KB)
+======================================================================
+
+======================================================================
+SECTION A: OS-9 MODULE HEADERS (magic 0x4AFC)
+======================================================================
+
+Firmware binary size: 524288 bytes (512 KB / 0x80000)
+Total REAL OS-9 module headers found: 1
+
+  Offset 0x000EA4:
+    m_type = 0xB0, m_typay = 0xBC
+    m_size = 0x000100 (256 bytes)
+    m_attrib/rev/edit = 0xF4/0x66/0x02
+    m_name_offset = 0xFC -> "9&"
+
+--- FALSE POSITIVES from correlate script (Section 2) ---
+The correlate script scanned every 2 bytes for 0x4AFC, producing 13
+'hits' that are NOT real OS-9 modules — they are data bytes that
+coincidentally match the magic when scanned byte-by-byte:
+
+  Offsets that ARE NOT real modules:
+  @0x048B3, @0x0D495, @0x146BD, @0x2DA85, @0x2E169, @0x2F1E1,
+  @0x312A5, @0x36C75, @0x381FF, @0x5354B, @0x5FE67, @0x73A2D
+
+  Evidence: their declared sizes are absurdly large (hundreds of MB)
+  because the bytes following the spurious 0x4AFC match are not
+  OS-9 module header fields but repeating data patterns (0x66CCB51E,
+  0x668C5384 — likely MPEG bitstream block markers or padding).
+
+======================================================================
+SECTION B: RELEVANT ASCII STRINGS
+======================================================================
+
+(No relevant strings found in binary — likely 8-bit encoded data)
+
+NOTE: The correlate script (Section 3) found 0 occurrences for all search
+terms. This is expected because the firmware stores strings in a
+compact 5-bit or 4-bit packed format (standard for CD-i NVRAM/ROM),
+not as plain ASCII. Decode strings at offset 0x20E6+ for init-related
+text, or consult cdi200.rom for unpacked OS-9 kernel strings.
+
+======================================================================
+SECTION C: EXTENSION SPACE REFERENCES (0x400000–0xFFFFFF)
+======================================================================
+
+Total refs scanned (every 2 bytes): 34507
+
+High-byte bucket distribution:
+  0x40xxxx:  1359 refs  ###########################
+  0x41xxxx:   222 refs  ####
+  0x42xxxx:   179 refs  ###
+  0x43xxxx:    86 refs  #
+  0x44xxxx:   244 refs  ####
+  0x45xxxx:    83 refs  #
+  0x46xxxx:   213 refs  ####
+  0x47xxxx:    72 refs  #
+  0x48xxxx:   340 refs  ######
+  0x49xxxx:   104 refs  ##
+  0x4Axxxx:   194 refs  ###
+  0x4Bxxxx:    75 refs  #
+  0x4Cxxxx:   126 refs  ##
+  0x4Dxxxx:   359 refs  #######
+  0x4Exxxx:    71 refs  #
+  0x4Fxxxx:    59 refs  #
+  0x50xxxx:   176 refs  ###
+  0x51xxxx:    13 refs  
+  0x52xxxx:    70 refs  #
+  0x53xxxx:    41 refs  
+  0x54xxxx:   109 refs  ##
+  0x55xxxx:   104 refs  ##
+  0x56xxxx:    41 refs  
+  0x57xxxx:   115 refs  ##
+  0x58xxxx:    93 refs  #
+  0x59xxxx:    18 refs  
+  0x5Axxxx:    74 refs  #
+  0x5Bxxxx:    14 refs  
+  0x5Cxxxx:    52 refs  #
+  0x5Dxxxx:    27 refs  
+  0x5Exxxx:    69 refs  #
+  0x5Fxxxx:    99 refs  #
+  0x60xxxx:  3095 refs  ########################################
+  0x61xxxx:  4819 refs  ########################################
+  0x62xxxx:    95 refs  #
+  0x63xxxx:    65 refs  #
+  0x64xxxx:   207 refs  ####
+  0x65xxxx:   469 refs  #########
+  0x66xxxx:   663 refs  #############
+  0x67xxxx:   825 refs  ################
+  0x68xxxx:   283 refs  #####
+  0x69xxxx:   243 refs  ####
+  0x6Axxxx:   321 refs  ######
+  0x6Bxxxx:   181 refs  ###
+  0x6Cxxxx:   245 refs  ####
+  0x6Dxxxx:   246 refs  ####
+  0x6Exxxx:   452 refs  #########
+  0x6Fxxxx:   783 refs  ###############
+  0x70xxxx:  1243 refs  ########################
+  0x71xxxx:    43 refs  
+  0x72xxxx:   609 refs  ############
+  0x73xxxx:    77 refs  #
+  0x74xxxx:   308 refs  ######
+  0x75xxxx:   583 refs  ###########
+  0x76xxxx:   123 refs  ##
+  0x77xxxx:    18 refs  
+  0x78xxxx:   494 refs  #########
+  0x79xxxx:    32 refs  
+  0x7Axxxx:   240 refs  ####
+  0x7Bxxxx:    14 refs  
+  0x7Cxxxx:   600 refs  ############
+  0x7Dxxxx:    29 refs  
+  0x7Exxxx:   139 refs  ##
+  0x7Fxxxx:    23 refs  
+  0x80xxxx:   899 refs  #################
+  0x81xxxx:   129 refs  ##
+  0x82xxxx:    79 refs  #
+  0x83xxxx:    41 refs  
+  0x84xxxx:   106 refs  ##
+  0x85xxxx:    35 refs  
+  0x86xxxx:   123 refs  ##
+  0x87xxxx:    34 refs  
+  0x88xxxx:   248 refs  ####
+  0x89xxxx:    48 refs  
+  0x8Axxxx:    59 refs  #
+  0x8Bxxxx:    27 refs  
+  0x8Cxxxx:    71 refs  #
+  0x8Dxxxx:     8 refs  
+  0x8Exxxx:    19 refs  
+  0x8Fxxxx:    75 refs  #
+  0x90xxxx:   178 refs  ###
+  0x91xxxx:     7 refs  
+  0x92xxxx:    42 refs  
+  0x93xxxx:    37 refs  
+  0x94xxxx:    83 refs  #
+  0x95xxxx:    13 refs  
+  0x96xxxx:    48 refs  
+  0x97xxxx:    42 refs  
+  0x98xxxx:    52 refs  #
+  0x99xxxx:     8 refs  
+  0x9Axxxx:    34 refs  
+  0x9Bxxxx:     3 refs  
+  0x9Cxxxx:    22 refs  
+  0x9Dxxxx:     5 refs  
+  0x9Exxxx:    27 refs  
+  0x9Fxxxx:     6 refs  
+  0xA0xxxx:    65 refs  #
+  0xA1xxxx:     5 refs  
+  0xA2xxxx:    31 refs  
+  0xA3xxxx:     8 refs  
+  0xA4xxxx:    34 refs  
+  0xA5xxxx:     5 refs  
+  0xA6xxxx:    28 refs  
+  0xA7xxxx:    95 refs  #
+  0xA8xxxx:   175 refs  ###
+  0xA9xxxx:    37 refs  
+  0xAAxxxx:   189 refs  ###
+  0xABxxxx:    39 refs  
+  0xACxxxx:    44 refs  
+  0xADxxxx:    27 refs  
+  0xAExxxx:   263 refs  #####
+  0xAFxxxx:   213 refs  ####
+  0xB0xxxx:    86 refs  #
+  0xB1xxxx:     2 refs  
+  0xB2xxxx:    38 refs  
+  0xB3xxxx:    16 refs  
+  0xB4xxxx:    43 refs  
+  0xB5xxxx:     2 refs  
+  0xB6xxxx:    29 refs  
+  0xB7xxxx:     4 refs  
+  0xB8xxxx:    44 refs  
+  0xB9xxxx:     6 refs  
+  0xBAxxxx:    44 refs  
+  0xBBxxxx:     5 refs  
+  0xBCxxxx:   129 refs  ##
+  0xBDxxxx:     8 refs  
+  0xBExxxx:    45 refs  
+  0xBFxxxx:     5 refs  
+  0xC0xxxx:   504 refs  ##########
+  0xC1xxxx:   110 refs  ##
+  0xC2xxxx:    81 refs  #
+  0xC3xxxx:    39 refs  
+  0xC4xxxx:    50 refs  #
+  0xC5xxxx:    19 refs  
+  0xC6xxxx:   182 refs  ###
+  0xC7xxxx:    28 refs  
+  0xC8xxxx:   106 refs  ##
+  0xC9xxxx:     9 refs  
+  0xCAxxxx:    47 refs  
+  0xCBxxxx:    19 refs  
+  0xCCxxxx:    54 refs  #
+  0xCDxxxx:    21 refs  
+  0xCExxxx:    32 refs  
+  0xCFxxxx:    14 refs  
+  0xD0xxxx:    73 refs  #
+  0xD1xxxx:    11 refs  
+  0xD2xxxx:    68 refs  #
+  0xD3xxxx:    18 refs  
+  0xD4xxxx:    44 refs  
+  0xD5xxxx:     4 refs  
+  0xD6xxxx:    55 refs  #
+  0xD7xxxx:    17 refs  
+  0xD8xxxx:    61 refs  #
+  0xD9xxxx:     9 refs  
+  0xDAxxxx:    46 refs  
+  0xDBxxxx:    21 refs  
+  0xDCxxxx:    63 refs  #
+  0xDDxxxx:    96 refs  #
+  0xDExxxx:    83 refs  #
+  0xDFxxxx:   316 refs  ######
+  0xE0xxxx:   181 refs  ###
+  0xE1xxxx:    23 refs  
+  0xE2xxxx:    40 refs  
+  0xE3xxxx:    19 refs  
+  0xE4xxxx:   128 refs  ##
+  0xE5xxxx:    58 refs  #
+  0xE6xxxx:    32 refs  
+  0xE7xxxx:  1307 refs  ##########################
+  0xE8xxxx:    92 refs  #
+  0xE9xxxx:    49 refs  
+  0xEAxxxx:   182 refs  ###
+  0xEBxxxx:    52 refs  #
+  0xECxxxx:   137 refs  ##
+  0xEDxxxx:   217 refs  ####
+  0xEExxxx:   196 refs  ###
+  0xEFxxxx:   220 refs  ####
+  0xF0xxxx:   132 refs  ##
+  0xF1xxxx:    56 refs  #
+  0xF2xxxx:    46 refs  
+  0xF3xxxx:    10 refs  
+  0xF4xxxx:   119 refs  ##
+  0xF5xxxx:     9 refs  
+  0xF6xxxx:    51 refs  #
+  0xF7xxxx:     3 refs  
+  0xF8xxxx:   130 refs  ##
+  0xF9xxxx:    12 refs  
+  0xFAxxxx:   391 refs  #######
+  0xFBxxxx:    80 refs  #
+  0xFCxxxx:   302 refs  ######
+  0xFDxxxx:   123 refs  ##
+  0xFExxxx:   274 refs  #####
+  0xFFxxxx:   696 refs  #############
+
+Key observations:
+  - 0x61xxxx (4819 refs): HIGHEST count — likely CD-i hardware I/O
+  - 0x60xxxx (3095 refs): Second highest — likely video/FMV buffer
+  - 0xE7xxxx (1307 refs): Also very high — frequently accessed region
+  - 0x40xxxx (1359 refs): ROM/Expansion Space base
+  - 0x80xxxx (899 refs):  Hardware I/O register range
+  - 0x70xxxx (1243 refs): Stack/branch targets
+
+M68K opcode-filtered plausible refs: 1663
+
+=== ~25 Most Plausible Real References (M68K opcode context) ===
+
+  0x40xxxx (67 raw / 53 unique refs):
+    @0x03AFE1 -> 0x00400012 [BRA/BSR/Bcc] ctx=" @ H8 �"
+    @0x02A809 -> 0x00400046 [BRA/BSR/Bcc] ctx=" @ F  "
+    @0x0304C5 -> 0x004000C2 [BRA/BSR/Bcc] ctx=" @ � ��"
+    @0x071277 -> 0x0040020F [BRA/BSR/Bcc] ctx=" @ 0 "
+
+  0x41xxxx (9 raw / 7 unique refs):
+    @0x00986D -> 0x00412D30 [BRA/BSR/Bcc] ctx=" A-0 �D�"
+    @0x000F4F -> 0x00412F04 [BRA/BSR/Bcc] ctx=" A/ �� "
+    @0x000FBF -> 0x00412F04 [BRA/BSR/Bcc] ctx=" A/ `�"
+    @0x02A1F3 -> 0x00414200 [BRA/BSR/Bcc] ctx=" AB ` k"
+    @0x02C60D -> 0x00414242 [BRA/BSR/Bcc] ctx=" ABBBCB�"
+
+  0x61xxxx (119 raw / 117 unique refs):
+    @0x066336 -> 0x00610204 [MOVEQ] ctx=" a�Bl�"
+    @0x033236 -> 0x0061061C [BRA/BSR/Bcc] ctx=" a�P//"
+    @0x0120A8 -> 0x00610A01 [BRA/BSR/Bcc] ctx=" a
+he x"
+    @0x033018 -> 0x00610C1E [BRA/BSR/Bcc] ctx=" a�P@p"
+
+  0x6Exxxx (81 raw / 39 unique refs):
+    @0x06ACD6 -> 0x006E0020 [BRA/BSR/Bcc] ctx=" n  nIet"
+    @0x04B1FF -> 0x006E02EE [BRA/BSR/Bcc] ctx=" n�k��"
+    @0x0678D1 -> 0x006E0C0A [BRA/BSR/Bcc] ctx=" n
+z� "
+    @0x067297 -> 0x006E0CFF [BRA/BSR/Bcc] ctx=" n���� "
+    @0x06B8E9 -> 0x006E0CFF [BRA/BSR/Bcc] ctx=" n����"
+    @0x06BD69 -> 0x006E0CFF [BRA/BSR/Bcc] ctx=" n����"
+    @0x06CA1B -> 0x006E0CFF [BRA/BSR/Bcc] ctx=" n���� "
+
+  0x6Fxxxx (70 raw / 33 unique refs):
+    @0x00E696 -> 0x006F0000 [BRA/BSR/Bcc] ctx=" o  <  "
+    @0x06B0A5 -> 0x006F1F03 [BRA/BSR/Bcc] ctx=" o  x"
+    @0x056F39 -> 0x006F2002 [BRA/BSR/Bcc] ctx=" o  (/2"
+    @0x057027 -> 0x006F2002 [BRA/BSR/Bcc] ctx=" o  (/2"
+    @0x0571F1 -> 0x006F2002 [BRA/BSR/Bcc] ctx=" o  (/2"
+
+======================================================================
+END OF DIGEST
+======================================================================
