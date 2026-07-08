@@ -87,12 +87,12 @@ int main(void) {
     // if (enter_service_mode && idx < (int)sizeof(script))
     //     uart_inject_rx(bus, script[idx++]);
 
-    for (long i = 0; i < 9200; i++) {
+    for (long i = 0; i < 7000; i++) {
         uart_poll_host_input();
 
         /* Trace AVANT exécution (état entrant de l'instruction) */
         if (trace_enable && traced < trace_max) {
-            if (traced > 7430 /*&& traced < 8000*/) {
+            if (traced > 6290 /*&& traced < 8000*/) {
                 uint32_t pc_before = cpu.pc;
                 printf("[STEP %6ld] PC=0x%08X -> opcode=0x%04X "
                     "| A7=0x%08X SR=0x%04X | D0=0x%08X D7=0x%08X A1=0x%08X A2=0x%08X A3=0x%08X A4=0x%08X A5=0x%08X\n",
