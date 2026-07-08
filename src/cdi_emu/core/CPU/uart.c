@@ -1,5 +1,5 @@
 #include "uart.h"
-#include "bus.h"
+#include "../bus.h"
 #include <stdio.h>
 #include <stdlib.h>
 

@@ -1,8 +1,8 @@
 #include "bus.h"
 #include "rom_loader.h"
-#include "scc66470.h"
-#include "slave.h"
-#include "uart.h"
+#include "./GPU/scc66470.h"
+#include "./SLAVE/slave.h"
+#include "./CPU/uart.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

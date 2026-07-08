@@ -21,17 +21,18 @@ typedef struct uart_s {
     uint8_t clksel;    /* UCS register snapshot */
 } uart_t;
 
-/* Forward declaration to avoid circular include with bus.h */
-struct bus_s;
+/* Forward declaration matching bus.h's real struct tag ("struct bus"),
+   to avoid circular include. Do NOT use "struct bus_s" — it doesn't exist. */
+struct bus;
 
 /* ===== UART public API ===== */
 void    uart_init(void);
 void    uart_feed(uint8_t byte);
 void    uart_poll_host_input(void);
-void    uart_inject_rx(struct bus_s *b, uint8_t c);
+void    uart_inject_rx(struct bus *b, uint8_t c);
 
 /* Called by bus.c dispatch */
-uint8_t uart_read8(struct bus_s *b, uint32_t addr);
-void    uart_write8(struct bus_s *b, uint32_t addr, uint8_t v);
+uint8_t uart_read8(struct bus *b, uint32_t addr);
+void    uart_write8(struct bus *b, uint32_t addr, uint8_t v);
 
 #endif /* UART_H */

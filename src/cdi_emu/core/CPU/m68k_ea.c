@@ -1,6 +1,6 @@
 /* m68k_ea.c */
 #include "m68k_ea.h"
-#include "bus.h"
+#include "../bus.h"
 #include <stdio.h>
 
 
