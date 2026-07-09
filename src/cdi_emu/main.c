@@ -6,6 +6,7 @@
   #include <fcntl.h>
 #endif
 #include "core/CPU/m68k.h"
+#include "core/CPU/uart_console.h"
 #include "core/bus.h"
 #include "core/rom_loader.h"
 #include "core/GPU/scc66470.h"
@@ -49,6 +50,10 @@ int main(void) {
 
     m68k_reset(&cpu);
 
+
+    uart_console_init();
+
+    int running = 1;
 
 
     printf("PC=0x%08X SR=0x%04X A7=0x%08X\n",
@@ -130,9 +135,14 @@ int main(void) {
             fflush(stdout);
             return 0;
         }
+
+        /* Rafraîchir la fenêtre UART régulièrement (pas nécessairement
+         * à chaque instruction — toutes les N cycles ou 1x/frame) */
+        running = uart_console_update();
     }
 
     bus_destroy(bus);
+    uart_console_close();
     printf("\nEmulation stopped\n");
     return 0;
 }
