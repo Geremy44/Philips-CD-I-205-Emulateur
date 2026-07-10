@@ -1,12 +1,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #ifdef _WIN32
   #include <io.h>
   #include <fcntl.h>
 #endif
+
 #include "core/CPU/m68k.h"
-#include "core/CPU/uart_console.h"
+#include "core/CPU/uart_console.h"   /* inclut SDL, mais deja gere */
 #include "core/bus.h"
 #include "core/rom_loader.h"
 #include "core/GPU/scc66470.h"
@@ -17,6 +19,7 @@ static slave_t g_slave;
 
 int main(void) {
     printf("=== CD-I 205 Emulator ===\n");
+    //SDL_SetMainReady();
 
 #ifdef _WIN32
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -52,9 +55,6 @@ int main(void) {
 
 
     uart_console_init();
-
-    int running = 1;
-
 
     printf("PC=0x%08X SR=0x%04X A7=0x%08X\n",
            cpu.pc, cpu.sr, cpu.a[7]);
@@ -92,7 +92,11 @@ int main(void) {
     // if (enter_service_mode && idx < (int)sizeof(script))
     //     uart_inject_rx(bus, script[idx++]);
 
-    for (long i = 0; i < 7000; i++) {
+    int running = 1;
+    long i = 0;
+    int update_counter = 0;
+
+    while (running /*&& i < 100000*/) {
         uart_poll_host_input();
 
         /* Trace AVANT exécution (état entrant de l'instruction) */
@@ -121,24 +125,24 @@ int main(void) {
         /* UNE SEULE exécution par tour */
         int cycles = m68k_step(&cpu);
 
-        /* Avance la synchro vidéo avec le bon nombre de cycles */
-        scc66470_tick(&g_video, cycles);
-
-
-        /* Détection de halt : à adapter selon ta convention de retour */
-        if (cpu.halted) {              /* ou: if (cycles <= 0) selon ton API */
+       scc66470_tick(&g_video, cycles);
+    
+        if (cpu.halted) {
             fprintf(stderr, "[HALT] CPU stopped/halted at step %ld\n", traced);
             break;
         }
-
+        
         if (trace_max > 0 && traced >= trace_max) {
             fflush(stdout);
-            return 0;
+            break;
         }
 
-        /* Rafraîchir la fenêtre UART régulièrement (pas nécessairement
-         * à chaque instruction — toutes les N cycles ou 1x/frame) */
-        running = uart_console_update();
+        if (++update_counter >= 100) {
+            update_counter = 0;
+            running = uart_console_update();  /* retourne 0 si SDL_QUIT */
+        }
+        
+        i++;
     }
 
     bus_destroy(bus);
