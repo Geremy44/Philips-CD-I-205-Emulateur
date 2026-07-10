@@ -71,6 +71,26 @@ static int esc_cur_param = 0;
 static uint8_t rx_buf[RX_BUF_SIZE];
 static int rx_head = 0, rx_tail = 0;
 
+
+static TTF_Font *try_open_font(void) {
+    const char *paths[] = {
+        UART_FONT_PATH,
+        "DejaVuSansMono.ttf",
+        "C:/Windows/Fonts/consola.ttf",   /* Consolas - toujours présent */
+        "C:/Windows/Fonts/cour.ttf",      /* Courier New */
+        "/ucrt64/share/fonts/TTF/DejaVuSansMono.ttf",
+        NULL
+    };
+    for (int i = 0; paths[i]; i++) {
+        TTF_Font *f = TTF_OpenFont(paths[i], 14);
+        if (f) {
+            fprintf(stderr, "[uart_console] Police chargee: %s\n", paths[i]);
+            return f;
+        }
+    }
+    return NULL;
+}
+
 static void rx_push(uint8_t c) {
     int next = (rx_head + 1) % RX_BUF_SIZE;
     if (next != rx_tail) {
@@ -314,11 +334,9 @@ void uart_console_init(void) {
         ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     }
 
-    font = TTF_OpenFont(UART_FONT_PATH, 14);
+    font = try_open_font();
     if (!font) {
-        fprintf(stderr, "[uart_console] Impossible de charger la police '%s': %s\n",
-                UART_FONT_PATH, TTF_GetError());
-        fprintf(stderr, "[uart_console] Definissez UART_FONT_PATH vers une police .ttf valide.\n");
+        fprintf(stderr, "[uart_console] AUCUNE police trouvee: %s\n", TTF_GetError());
     }
 
     current_fg = default_fg;
@@ -342,6 +360,8 @@ int uart_console_update(void) {
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_QUIT:
+            uart_console_close();
+            exit(0);        /* sortie immediate si la boucle principale l'ignore */
             return 0;
 
         case SDL_TEXTINPUT:
