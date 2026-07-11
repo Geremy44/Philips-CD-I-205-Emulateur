@@ -2,6 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define SDL_MAIN_HANDLED
+#include <SDL2/SDL.h> 
+
 #ifdef _WIN32
   #include <io.h>
   #include <fcntl.h>
@@ -18,8 +21,12 @@ static scc66470_t g_video;   /* ou dans ta struct system globale */
 static slave_t g_slave;
 
 int main(void) {
+
+    setvbuf(stdout, NULL, _IONBF, 0);   /* stdout non bufferise */
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     printf("=== CD-I 205 Emulator ===\n");
-    //SDL_SetMainReady();
+    SDL_SetMainReady();
 
 #ifdef _WIN32
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -96,7 +103,7 @@ int main(void) {
     long i = 0;
     int update_counter = 0;
 
-    while (running /*&& i < 100000*/) {
+    while (running && i < trace_max) {
         uart_poll_host_input();
 
         /* Trace AVANT exécution (état entrant de l'instruction) */
@@ -132,10 +139,10 @@ int main(void) {
             break;
         }
         
-        if (trace_max > 0 && traced >= trace_max) {
-            fflush(stdout);
-            break;
-        }
+        // if (trace_max > 0 && traced >= trace_max) {
+        //     fflush(stdout);
+        //     break;
+        // }
 
         if (++update_counter >= 100) {
             update_counter = 0;
@@ -145,8 +152,23 @@ int main(void) {
         i++;
     }
 
-    bus_destroy(bus);
+    fflush(stdout);
+
+    fprintf(stderr, "[MAIN] CPU loop terminee (traced=%ld), fenetre maintenue.\n", traced);
+    fprintf(stderr, "[MAIN] Fermez avec la croix de la fenetre.\n");
+
+    int win_alive = 1;
+    while (win_alive) {
+
+        if (++update_counter >= 100) {
+            update_counter = 0;
+            win_alive = uart_console_update();  /* retourne 0 si SDL_QUIT */
+        }
+        SDL_Delay(16);
+    }
+
     uart_console_close();
+    bus_destroy(bus);
     printf("\nEmulation stopped\n");
     return 0;
 }
