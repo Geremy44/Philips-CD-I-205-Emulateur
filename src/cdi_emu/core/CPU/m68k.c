@@ -1,5 +1,6 @@
 #include "m68k.h"
 #include "m68k_ops.h"
+#include "../bus.h"
 #include <string.h>
 #include <stdio.h>
 

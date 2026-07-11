@@ -1,5 +1,6 @@
 #include "m68k_ops.h"
 #include "m68k_ea.h"
+#include "../bus.h"
 
 /* SR flag masks (also declared in m68k_ops.h for external use) */
 #ifndef SR_N
