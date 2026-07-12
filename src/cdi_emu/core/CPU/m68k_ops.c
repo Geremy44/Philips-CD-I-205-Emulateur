@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "m68k_ops.h"
 #include "m68k_ea.h"
 #include "../bus.h"
@@ -617,7 +618,10 @@ void m68k_step_ops(m68k_t *cpu)
 
     /* ---------- default : opcode inconnu ---------- */
     default:
-        cpu->stopped = 1;
+        fprintf(stderr,
+            "[M68K] OPCODE NON GERE: 0x%04X @ PC=0x%08X\n",
+            insn, cpu->pc - 2);   /* -2 car PC a deja avance apres le fetch */
+        cpu->halted = 1;
         return;
     }
 }

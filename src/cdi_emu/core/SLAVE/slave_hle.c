@@ -28,11 +28,11 @@ static void hle_write8(void *ctx, uint32_t addr, uint8_t val)
 {
     hle_ctx_t *c = ctx;
 
-    fprintf(stderr, "[SLAVE] WR @%06X = %02X\n", addr, val);
+    //fprintf(stderr, "[SLAVE] WR @%06X = %02X\n", addr, val);
 
     if (addr == REG_EXCHANGE) {          /* 0x200007 */
         c->last_request = val;
-        fprintf(stderr, "[SLAVE] CMD 0x%02X @200007\n", val);
+        //fprintf(stderr, "[SLAVE] CMD 0x%02X @200007\n", val);
 
         if (val == CMD_INIT) {           /* 0xF6 reçu */
             c->status = ACK_INIT;        /* acquitte sur 0x200005 */
@@ -45,7 +45,7 @@ static uint8_t hle_read8(void *ctx, uint32_t addr)
     hle_ctx_t *c = ctx;
 
     if (addr == REG_STATUS) {            /* 0x200005 */
-        fprintf(stderr, "[SLAVE] RD STATUS -> %02X\n", c->status);
+        //fprintf(stderr, "[SLAVE] RD STATUS -> %02X\n", c->status);
         return c->status;
     }
     return 0xFF;
