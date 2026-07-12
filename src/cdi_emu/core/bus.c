@@ -103,13 +103,13 @@ uint8_t bus_read8(bus_t *b, uint32_t addr) {
 
     if (addr >= 0x200000 && addr <= 0x207FFF) {
         uint8_t v = b->slave->read8(b->slave->ctx, addr);
-        fprintf(stderr, "[SLAVE RD] @%06X -> %02X\n", addr, v);
+        //fprintf(stderr, "[SLAVE RD] @%06X -> %02X\n", addr, v);
         return v;
     }
 
     /* ===== UART : 0x80002010-0x8000201F ===== */
     if (addr >= UART_BASE && addr < UART_BASE + UART_SIZE) {
-        fprintf(stderr, "[BUS->UART RD8] addr=%08X\n", addr);
+        //fprintf(stderr, "[BUS->UART RD8] addr=%08X\n", addr);
         return uart_read8(b, addr);
     }
 
@@ -161,7 +161,7 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
 
     /* ===== SLAVE 68HC05 ===== */
     if (addr >= 0x200000 && addr <= 0x207FFF) {
-        fprintf(stderr, "[SLAVE WR] @%06X = %02X\n", addr, v);
+        //fprintf(stderr, "[SLAVE WR] @%06X = %02X\n", addr, v);
         b->slave->write8(b->slave->ctx, addr, v);
         return;
     }
