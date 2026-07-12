@@ -136,6 +136,142 @@ void m68k_address_error(m68k_t *cpu, uint32_t fault_addr, uint32_t ir)
             |  (uint32_t)m68k_read16(cpu, 0x18000E);
 }
 
+
+void op_shift_reg(m68k_t *cpu, uint16_t op) {
+    int count_field = (op >> 9) & 7;   /* count immediat OU num de registre */
+    int dir         = (op >> 8) & 1;   /* 1 = left, 0 = right */
+    int size        = (op >> 6) & 3;   /* 00=byte 01=word 10=long */
+    int ir          = (op >> 5) & 1;   /* 0 = count immediat, 1 = par registre */
+    int type        = (op >> 3) & 3;   /* 00=AS 01=LS 10=ROX 11=RO */
+    int reg         = op & 7;          /* registre de donnees cible */
+
+    //int X = (cpu->sr >> 4) & 1;
+
+    /* Nombre de decalages */
+    uint32_t count;
+    if (ir == 0) {
+        count = (count_field == 0) ? 8 : count_field;  /* 0 => 8 */
+    } else {
+        count = cpu->d[count_field] & 63;              /* modulo 64 */
+    }
+
+    /* Masque et nombre de bits selon la taille */
+    uint32_t mask;
+    int bits;
+    switch (size) {
+        case 0: mask = 0x000000FF; bits = 8;  break;
+        case 1: mask = 0x0000FFFF; bits = 16; break;
+        case 2: mask = 0xFFFFFFFF; bits = 32; break;
+        default: return;
+    }
+
+    uint32_t val = cpu->d[reg] & mask;
+    int carry = 0;
+    int overflow = 0;
+
+    if (type == 0) {
+        /* ===== ASL / ASR (arithmetique) ===== */
+        if (dir) {
+            /* ASL */
+            for (uint32_t i = 0; i < count; i++) {
+                uint32_t msb_before = (val >> (bits - 1)) & 1;
+                carry = msb_before;
+                val = (val << 1) & mask;
+                uint32_t msb_after = (val >> (bits - 1)) & 1;
+                if (msb_before != msb_after) overflow = 1;
+            }
+        } else {
+            /* ASR : conserve le bit de signe */
+            uint32_t sign = (val >> (bits - 1)) & 1;
+            for (uint32_t i = 0; i < count; i++) {
+                carry = val & 1;
+                val >>= 1;
+                if (sign) val |= (1u << (bits - 1));
+            }
+        }
+    } else if (type == 1) {
+        /* ===== LSL / LSR (logique) ===== */
+        if (dir) {
+            for (uint32_t i = 0; i < count; i++) {
+                carry = (val >> (bits - 1)) & 1;
+                val = (val << 1) & mask;
+            }
+        } else {
+            for (uint32_t i = 0; i < count; i++) {
+                carry = val & 1;
+                val >>= 1;
+            }
+        }
+    } else if (type == 2) {
+        /* ===== ROXL / ROXR (rotation via X) ===== */
+        int x = (cpu->sr >> 4) & 1;   /* bit X du SR */
+        if (dir) {
+            for (uint32_t i = 0; i < count; i++) {
+                int msb = (val >> (bits - 1)) & 1;
+                val = ((val << 1) | x) & mask;
+                x = msb;
+            }
+        } else {
+            for (uint32_t i = 0; i < count; i++) {
+                int lsb = val & 1;
+                val = (val >> 1) | ((uint32_t)x << (bits - 1));
+                x = lsb;
+            }
+        }
+        carry = x;
+    } else {
+        /* ===== ROL / ROR (rotation simple) ===== */
+        if (dir) {
+            /* ROL */
+            for (uint32_t i = 0; i < count; i++) {
+                int msb = (val >> (bits - 1)) & 1;
+                val = ((val << 1) | msb) & mask;
+                carry = msb;
+            }
+        } else {
+            /* ROR : notre cas 0xE898 */
+            for (uint32_t i = 0; i < count; i++) {
+                int lsb = val & 1;
+                val = (val >> 1) | ((uint32_t)lsb << (bits - 1));
+                carry = lsb;
+            }
+        }
+    }
+
+    /* Ecriture du resultat dans le registre (preserve les bits hauts non concernes) */
+    cpu->d[reg] = (cpu->d[reg] & ~mask) | (val & mask);
+
+    /* ===== Mise a jour des flags ===== */
+    /* N : bit de signe du resultat */
+    int N = (val >> (bits - 1)) & 1;
+    /* Z : resultat nul */
+    int Z = ((val & mask) == 0) ? 1 : 0;
+
+    /* Reconstruire le SR : bits CCR = X N Z V C (positions 4 3 2 1 0) */
+    uint16_t sr = cpu->sr & ~0x1F;  /* efface X N Z V C */
+
+    if (N) sr |= (1 << 3);
+    if (Z) sr |= (1 << 2);
+    if (overflow) sr |= (1 << 1);   /* V : seulement pour ASL, sinon 0 */
+    if (count != 0) {
+        if (carry) sr |= (1 << 0);  /* C */
+        /* X = C pour AS/LS/ROX (pas pour RO !) */
+        if (type != 3) {
+            if (carry) sr |= (1 << 4);  /* X */
+            else       sr &= ~(1 << 4);
+        } else {
+            /* RO : X inchange -> on le restaure */
+            sr |= (cpu->sr & (1 << 4));
+        }
+    } else {
+        /* count == 0 : C = 0 (sauf ROX ou C=X), X inchange */
+        if (type == 2) { if ((cpu->sr >> 4) & 1) sr |= 1; }  /* ROX: C=X */
+        sr |= (cpu->sr & (1 << 4));  /* X inchange */
+    }
+
+    cpu->sr = sr;
+}
+
 /* ================================================================
  *  Décodeur principal
  * ================================================================ */
@@ -199,6 +335,112 @@ void m68k_step_ops(m68k_t *cpu)
             else if (op == 3)  val |= mask;
             if (op != 0) ea_write(cpu, ea_mode, ea_reg, size, val);
             return;
+        }
+        /* ---------- Immediat arithmetique/logique : ORI/ANDI/SUBI/ADDI/EORI/CMPI ---------- */
+        /* Format : 0000 tttt ss mmm rrr   (tttt pair, bit8=0 => pas bit-ops) */
+        /* ---------- Immediat arithmetique/logique : ORI/ANDI/SUBI/ADDI/EORI/CMPI ----------
+        * Format : 0000 tttt ss mmm rrr
+        *   tttt = 0x0 ORI  | 0x2 ANDI | 0x4 SUBI | 0x6 ADDI | 0xA EORI | 0xC CMPI
+        *   ss   = 00 byte  | 01 word  | 10 long  | 11 INVALIDE
+        * On utilise 4 bits (tttt), PAS 3, sinon ADDI(6) et CMPI(C) sont confondus !
+        */
+        if ((insn & 0xF000) == 0x0000 && (insn & 0x0100) == 0) {
+            int tttt = (insn >> 8) & 0xF;   /* 4 BITS : discriminant complet */
+
+            /* Ne traiter que les vrais immediats arithmetiques/logiques */
+            if (tttt == 0x0 || tttt == 0x2 || tttt == 0x4 ||
+                tttt == 0x6 || tttt == 0xA || tttt == 0xC) {
+
+                int size = (insn >> 6) & 3;   /* 0=byte 1=word 2=long */
+
+                if (size == 3) {
+                    fprintf(stderr, "[M68K] imm size=3 invalide: 0x%04X @ 0x%08X\n",
+                            insn, cpu->pc - 2);
+                    cpu->halted = 1;
+                    return;
+                }
+
+                int bits = (size == 0) ? 8 : (size == 1) ? 16 : 32;
+
+                fprintf(stderr, "[CASE0-IMM] insn=0x%04X tttt=0x%X size=%d PC=0x%08X\n",
+                        insn, tttt, size, cpu->pc - 2);
+
+                /* Lecture de l'immediat */
+                uint32_t imm;
+                if (size == 2) {
+                    imm = ((uint32_t)m68k_read16(cpu, cpu->pc) << 16)
+                        |  (uint32_t)m68k_read16(cpu, cpu->pc + 2);
+                    cpu->pc += 4;
+                } else {
+                    imm = m68k_read16(cpu, cpu->pc);
+                    cpu->pc += 2;
+                    if (size == 0) imm &= 0xFF;
+                }
+
+                /* Lecture de l'operande (EA) */
+                uint32_t val = ea_read(cpu, ea_mode, ea_reg, bits);
+
+                uint32_t mask = (bits == 8) ? 0xFF : (bits == 16) ? 0xFFFF : 0xFFFFFFFF;
+                uint32_t msb  = 1u << (bits - 1);
+                uint32_t res;
+                int writeback = 1;
+
+                switch (tttt) {
+                    case 0x0: res = val | imm; break;   /* ORI  */
+                    case 0x2: res = val & imm; break;   /* ANDI */
+                    case 0xA: res = val ^ imm; break;   /* EORI */
+
+                    case 0x4:   /* SUBI : val - imm */
+                    case 0xC: { /* CMPI : val - imm, PAS de writeback */
+                        uint64_t full = (uint64_t)(val & mask) - (uint64_t)(imm & mask);
+                        res = (uint32_t)full & mask;
+                        cpu->sr &= ~0x0F;                                     /* N Z V C (pas X) */
+                        if (res & msb)                     cpu->sr |= (1 << 3); /* N */
+                        if ((res & mask) == 0)             cpu->sr |= (1 << 2); /* Z */
+                        if (full & ((uint64_t)1 << bits))  cpu->sr |= (1 << 0); /* C = emprunt */
+                        if (((val ^ imm) & (val ^ res)) & msb) cpu->sr |= (1 << 1); /* V */
+
+                        if (tttt == 0xC) {
+                            writeback = 0;                  /* CMPI n'ecrit jamais */
+                        } else {
+                            /* SUBI met X = C */
+                            if (cpu->sr & 1) cpu->sr |= (1 << 4);
+                            else             cpu->sr &= ~(1 << 4);
+                        }
+                        goto imm_done;
+                    }
+
+                    case 0x6: { /* ADDI : val + imm */
+                        uint64_t full = (uint64_t)(val & mask) + (uint64_t)(imm & mask);
+                        res = (uint32_t)full & mask;
+                        cpu->sr &= ~0x0F;
+                        if (res & msb)                     cpu->sr |= (1 << 3); /* N */
+                        if ((res & mask) == 0)             cpu->sr |= (1 << 2); /* Z */
+                        if (full & ((uint64_t)1 << bits))  cpu->sr |= (1 << 0); /* C */
+                        if ((~(val ^ imm) & (val ^ res)) & msb) cpu->sr |= (1 << 1); /* V */
+                        if (cpu->sr & 1) cpu->sr |= (1 << 4);  /* X = C */
+                        else             cpu->sr &= ~(1 << 4);
+                        goto imm_done;
+                    }
+
+                    default:
+                        fprintf(stderr, "[M68K] immediat tttt inconnu 0x%X @ 0x%08X\n",
+                                tttt, cpu->pc);
+                        cpu->halted = 1;
+                        return;
+                }
+
+                /* Flags logiques (ORI/ANDI/EORI) : N,Z ; V=C=0 ; X inchange */
+                cpu->sr &= ~0x0F;
+                if (res & msb)         cpu->sr |= (1 << 3);   /* N */
+                if ((res & mask) == 0) cpu->sr |= (1 << 2);   /* Z */
+
+            imm_done:
+                if (writeback)
+                    ea_write(cpu, ea_mode, ea_reg, bits, res);
+                return;
+            }
+            /* sinon : pas un immediat (ex: MOVEP, bit-ops dynamiques...) -> continue */
         }
         return;
     }
@@ -615,6 +857,16 @@ void m68k_step_ops(m68k_t *cpu)
         }
         return;
     }
+
+    case 0xE:   /* 1110 : shift / rotate */
+        if (((insn >> 6) & 3) == 3) {
+            /* forme memoire : shift 1 bit sur EA - a implementer plus tard */
+            fprintf(stderr, "[M68K] shift memoire non gere: 0x%04X\n", insn);
+            cpu->halted = 1;
+        } else {
+            op_shift_reg(cpu, insn);   /* forme registre */
+        }
+        return;
 
     /* ---------- default : opcode inconnu ---------- */
     default:

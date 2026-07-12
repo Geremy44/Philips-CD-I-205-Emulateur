@@ -74,7 +74,7 @@ int main(void) {
      * - trace_max    : nombre d'instructions avant arrêt (défaut=0 → illimité)
      * ================================================================ */
     int  trace_enable = 1;
-    long trace_max = 10000;
+    long trace_max = 2000000;
     bool enter_service_mode = true;
     {
         //const char *env = getenv("EMU_TRACE");
@@ -108,21 +108,21 @@ int main(void) {
 
         /* Trace AVANT exécution (état entrant de l'instruction) */
         if (trace_enable && traced < trace_max) {
-            if (traced > 6290 /*&& traced < 8000*/) {
+            if (traced /*> 6290 && traced < 8000*/) {
                 uint32_t pc_before = cpu.pc;
                 printf("[STEP %6ld] PC=0x%08X -> opcode=0x%04X "
-                    "| A7=0x%08X SR=0x%04X | D0=0x%08X D7=0x%08X A1=0x%08X A2=0x%08X A3=0x%08X A4=0x%08X A5=0x%08X\n",
+                    "| A7=0x%08X SR=0x%04X | D0=0x%08X D1=0x%08X D7=0x%08X A1=0x%08X A2=0x%08X A3=0x%08X A4=0x%08X A5=0x%08X\n",
                     traced,
                     pc_before,
                     bus_read16(bus, pc_before),
                     cpu.a[7], cpu.sr,
-                    cpu.d[0], cpu.d[7], cpu.a[1], cpu.a[2], cpu.a[3], cpu.a[4], cpu.a[5]);
+                    cpu.d[0], cpu.d[1], cpu.d[7], cpu.a[1], cpu.a[2], cpu.a[3], cpu.a[4], cpu.a[5]);
 
                 
             }
       
-            if (enter_service_mode && traced == 20)
-                uart_inject_rx(bus, 0x05);
+            // if (enter_service_mode && traced == 20)
+            //     uart_inject_rx(bus, 0x05);
             traced++;
         }
 
