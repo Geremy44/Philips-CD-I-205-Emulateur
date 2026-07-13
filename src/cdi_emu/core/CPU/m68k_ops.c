@@ -1,4 +1,5 @@
 #include <stdio.h>
+
 #include "m68k_ops.h"
 #include "m68k_ea.h"
 #include "../bus.h"
@@ -54,6 +55,10 @@ static inline uint32_t mask_of(int size) {
          : (size == 16) ? 0xFFFFu
          : 0xFFFFFFFFu;
 }
+
+static inline int  get_x(m68k_t *cpu)      { return (cpu->sr >> 4) & 1; }
+static inline void set_x(m68k_t *cpu, int b){ if (b) cpu->sr |= SR_X; else cpu->sr &= ~SR_X; }
+
 
 /* ================================================================
  *  Condition codes
@@ -137,139 +142,118 @@ void m68k_address_error(m68k_t *cpu, uint32_t fault_addr, uint32_t ir)
 }
 
 
+/* Groupe 1110 : Shift/Rotate sur registre de donnees
+ * Format : 1110 ccc d ss i tt rrr
+ *   ccc = count (si i=0) ou registre de comptage (si i=1)
+ *   d   = direction (0=right, 1=left)
+ *   ss  = taille (00=byte, 01=word, 10=long)
+ *   i   = 0:immediat, 1:par registre
+ *   tt  = type (00=AS, 01=LS, 10=ROX, 11=RO)
+ *   rrr = registre de donnees cible
+ */
 void op_shift_reg(m68k_t *cpu, uint16_t op) {
-    int count_field = (op >> 9) & 7;   /* count immediat OU num de registre */
-    int dir         = (op >> 8) & 1;   /* 1 = left, 0 = right */
-    int size        = (op >> 6) & 3;   /* 00=byte 01=word 10=long */
-    int ir          = (op >> 5) & 1;   /* 0 = count immediat, 1 = par registre */
-    int type        = (op >> 3) & 3;   /* 00=AS 01=LS 10=ROX 11=RO */
-    int reg         = op & 7;          /* registre de donnees cible */
+    int count_field = (op >> 9) & 7;
+    int dir         = (op >> 8) & 1;      /* 1 = left */
+    int size        = (op >> 6) & 3;      /* 0=B,1=W,2=L */
+    int ir          = (op >> 5) & 1;      /* 0=imm, 1=reg */
+    int type        = (op >> 3) & 3;      /* 00=AS,01=LS,10=ROX,11=RO */
+    int reg         = op & 7;
 
-    //int X = (cpu->sr >> 4) & 1;
-
-    /* Nombre de decalages */
     uint32_t count;
-    if (ir == 0) {
-        count = (count_field == 0) ? 8 : count_field;  /* 0 => 8 */
-    } else {
-        count = cpu->d[count_field] & 63;              /* modulo 64 */
-    }
+    if (ir)
+        count = cpu->d[count_field] & 63;
+    else
+        count = (count_field == 0) ? 8 : count_field;
 
-    /* Masque et nombre de bits selon la taille */
-    uint32_t mask;
-    int bits;
+    uint32_t mask; int bits;
     switch (size) {
         case 0: mask = 0x000000FF; bits = 8;  break;
         case 1: mask = 0x0000FFFF; bits = 16; break;
-        case 2: mask = 0xFFFFFFFF; bits = 32; break;
-        default: return;
+        default:mask = 0xFFFFFFFF; bits = 32; break;
     }
 
-    uint32_t val = cpu->d[reg] & mask;
-    int carry = 0;
-    int overflow = 0;
+    uint32_t res = cpu->d[reg] & mask;
+    int carry = 0, overflow = 0;
+    int xflag = get_x(cpu);
 
-    if (type == 0) {
-        /* ===== ASL / ASR (arithmetique) ===== */
-        if (dir) {
-            /* ASL */
-            for (uint32_t i = 0; i < count; i++) {
-                uint32_t msb_before = (val >> (bits - 1)) & 1;
-                carry = msb_before;
-                val = (val << 1) & mask;
-                uint32_t msb_after = (val >> (bits - 1)) & 1;
-                if (msb_before != msb_after) overflow = 1;
+    for (uint32_t i = 0; i < count; i++) {
+        if (dir == 0) {  /* RIGHT */
+            switch (type) {
+                case 0: /* ASR */
+                    carry = res & 1;
+                    res = (res >> 1) | (res & (1u << (bits - 1)));
+                    break;
+                case 1: /* LSR */
+                    carry = res & 1;
+                    res >>= 1;
+                    break;
+                case 2: /* ROXR */
+                    {
+                        int newc = res & 1;
+                        res = (res >> 1) | ((uint32_t)xflag << (bits - 1));
+                        carry = newc; xflag = newc;
+                    }
+                    break;
+                case 3: /* ROR */
+                    carry = res & 1;
+                    res = (res >> 1) | ((uint32_t)carry << (bits - 1));
+                    break;
             }
-        } else {
-            /* ASR : conserve le bit de signe */
-            uint32_t sign = (val >> (bits - 1)) & 1;
-            for (uint32_t i = 0; i < count; i++) {
-                carry = val & 1;
-                val >>= 1;
-                if (sign) val |= (1u << (bits - 1));
+        } else {         /* LEFT */
+            uint32_t msb = res & (1u << (bits - 1));
+            switch (type) {
+                case 0: /* ASL */
+                    carry = msb ? 1 : 0;
+                    res <<= 1;
+                    if ((res & (1u << (bits-1))) != msb) overflow = 1;
+                    break;
+                case 1: /* LSL */
+                    carry = msb ? 1 : 0;
+                    res <<= 1;
+                    break;
+                case 2: /* ROXL */
+                    {
+                        int newc = msb ? 1 : 0;
+                        res = (res << 1) | (xflag & 1);
+                        carry = newc; xflag = newc;
+                    }
+                    break;
+                case 3: /* ROL */
+                    carry = msb ? 1 : 0;
+                    res = (res << 1) | (msb ? 1 : 0);
+                    break;
             }
         }
-    } else if (type == 1) {
-        /* ===== LSL / LSR (logique) ===== */
-        if (dir) {
-            for (uint32_t i = 0; i < count; i++) {
-                carry = (val >> (bits - 1)) & 1;
-                val = (val << 1) & mask;
-            }
-        } else {
-            for (uint32_t i = 0; i < count; i++) {
-                carry = val & 1;
-                val >>= 1;
-            }
-        }
-    } else if (type == 2) {
-        /* ===== ROXL / ROXR (rotation via X) ===== */
-        int x = (cpu->sr >> 4) & 1;   /* bit X du SR */
-        if (dir) {
-            for (uint32_t i = 0; i < count; i++) {
-                int msb = (val >> (bits - 1)) & 1;
-                val = ((val << 1) | x) & mask;
-                x = msb;
-            }
-        } else {
-            for (uint32_t i = 0; i < count; i++) {
-                int lsb = val & 1;
-                val = (val >> 1) | ((uint32_t)x << (bits - 1));
-                x = lsb;
-            }
-        }
-        carry = x;
+        res &= mask;
+    }
+
+    res &= mask;
+    cpu->d[reg] = (cpu->d[reg] & ~mask) | res;
+
+    fprintf(stderr, "[SHIFT] op=%04X type=%d dir=%d size=%d cnt=%u  in=%08X out=%08X\n",
+        op, type, dir, size, count,
+        (unsigned)(cpu->d[reg]), (unsigned)res);
+
+    int N = (res & (1u << (bits - 1))) ? 1 : 0;
+    int Z = (res == 0) ? 1 : 0;
+    int V = (type == 0 && dir == 1) ? overflow : 0;
+
+    if (count == 0) {
+        /* count nul : C non affecte (sauf ROX ou C=X). Simplification : */
+        carry = (type == 2) ? get_x(cpu) : 0;
+    }
+
+    cpu->sr &= ~0x1F;                 /* efface X N Z V C */
+    if (carry) cpu->sr |= SR_C;
+    if (V)     cpu->sr |= SR_V;
+    if (Z)     cpu->sr |= SR_Z;
+    if (N)     cpu->sr |= SR_N;
+
+    if (type != 3) {                  /* RO (type 3) n'affecte pas X */
+        set_x(cpu, (type == 2) ? xflag : carry);
     } else {
-        /* ===== ROL / ROR (rotation simple) ===== */
-        if (dir) {
-            /* ROL */
-            for (uint32_t i = 0; i < count; i++) {
-                int msb = (val >> (bits - 1)) & 1;
-                val = ((val << 1) | msb) & mask;
-                carry = msb;
-            }
-        } else {
-            /* ROR : notre cas 0xE898 */
-            for (uint32_t i = 0; i < count; i++) {
-                int lsb = val & 1;
-                val = (val >> 1) | ((uint32_t)lsb << (bits - 1));
-                carry = lsb;
-            }
-        }
+        set_x(cpu, get_x(cpu));       /* X inchange */
     }
-
-    /* Ecriture du resultat dans le registre (preserve les bits hauts non concernes) */
-    cpu->d[reg] = (cpu->d[reg] & ~mask) | (val & mask);
-
-    /* ===== Mise a jour des flags ===== */
-    /* N : bit de signe du resultat */
-    int N = (val >> (bits - 1)) & 1;
-    /* Z : resultat nul */
-    int Z = ((val & mask) == 0) ? 1 : 0;
-
-    /* Reconstruire le SR : bits CCR = X N Z V C (positions 4 3 2 1 0) */
-    uint16_t sr = cpu->sr & ~0x1F;  /* efface X N Z V C */
-
-    if (N) sr |= (1 << 3);
-    if (Z) sr |= (1 << 2);
-    if (overflow) sr |= (1 << 1);   /* V : seulement pour ASL, sinon 0 */
-    if (count != 0) {
-        if (carry) sr |= (1 << 0);  /* C */
-        /* X = C pour AS/LS/ROX (pas pour RO !) */
-        if (type != 3) {
-            if (carry) sr |= (1 << 4);  /* X */
-            else       sr &= ~(1 << 4);
-        } else {
-            /* RO : X inchange -> on le restaure */
-            sr |= (cpu->sr & (1 << 4));
-        }
-    } else {
-        /* count == 0 : C = 0 (sauf ROX ou C=X), X inchange */
-        if (type == 2) { if ((cpu->sr >> 4) & 1) sr |= 1; }  /* ROX: C=X */
-        sr |= (cpu->sr & (1 << 4));  /* X inchange */
-    }
-
-    cpu->sr = sr;
 }
 
 /* ================================================================
@@ -294,154 +278,204 @@ void m68k_step_ops(m68k_t *cpu)
 
     switch (nib0) {
 
-    /* ---------- 0x0 : ORI/ANDI/EORI CCR-SR + Bit ops ---------- */
+    /* ================================================================
+    *  GROUPE 0x0 : instructions immédiates + opérations sur bits
+    *  Format général : 0000 ttt s mm mrrr
+    *    - Immédiats  : ORI/ANDI/SUBI/ADDI/EORI/CMPI (+ formes CCR/SR)
+    *    - Bit ops    : BTST/BCHG/BCLR/BSET (immédiat ou par registre Dn)
+    *    - MOVEP       : (non implémenté ici, signalé)
+    * ================================================================ */
     case 0x0: {
-        if (insn == 0x003C) {                        /* ORI #imm,CCR */
-            uint16_t imm = m68k_read16(cpu, cpu->pc);
+
+        /* ---------------------------------------------------------------
+        *  1) Formes spéciales sur CCR / SR (ORI/ANDI/EORI #imm, CCR|SR)
+        * --------------------------------------------------------------- */
+        if (insn == 0x003C) {                 /* ORI  #imm8, CCR */
+            uint16_t imm = m68k_read16(cpu, cpu->pc) & 0xFF;
             cpu->pc += 2;
             cpu->sr = (cpu->sr & ~0x001F) | ((cpu->sr | imm) & 0x001F);
             return;
         }
-        if (insn == 0x007C) {                        /* ORI #imm,SR */
+        if (insn == 0x007C) {                 /* ORI  #imm16, SR */
             uint16_t imm = m68k_read16(cpu, cpu->pc);
             cpu->pc += 2;
             cpu->sr |= imm;
             return;
         }
-        if (insn == 0x027C) {                        /* ANDI #imm,SR */
+        if (insn == 0x023C) {                 /* ANDI #imm8, CCR */
+            uint16_t imm = m68k_read16(cpu, cpu->pc) & 0xFF;
+            cpu->pc += 2;
+            cpu->sr = (cpu->sr & ~0x001F) | ((cpu->sr & (imm | ~0x1F)) & 0x001F);
+            return;
+        }
+        if (insn == 0x027C) {                 /* ANDI #imm16, SR */
             uint16_t imm = m68k_read16(cpu, cpu->pc);
             cpu->pc += 2;
             cpu->sr &= imm;
             return;
         }
-        if (insn == 0x0A7C) {                        /* EORI #imm,SR */
+        if (insn == 0x0A3C) {                 /* EORI #imm8, CCR */
+            uint16_t imm = m68k_read16(cpu, cpu->pc) & 0xFF;
+            cpu->pc += 2;
+            cpu->sr = (cpu->sr & ~0x001F) | (((cpu->sr ^ imm)) & 0x001F);
+            return;
+        }
+        if (insn == 0x0A7C) {                 /* EORI #imm16, SR */
             uint16_t imm = m68k_read16(cpu, cpu->pc);
             cpu->pc += 2;
             cpu->sr ^= imm;
             return;
         }
-        if ((insn & 0xFF00) == 0x0800) {             /* BTST/BCHG/BCLR/BSET #imm */
-            uint16_t bitsel = m68k_read16(cpu, cpu->pc);
-            cpu->pc += 2;
-            int size = (ea_mode == 0) ? 32 : 8;
-            uint32_t val = ea_read(cpu, ea_mode, ea_reg, size);
+
+        /* ---------------------------------------------------------------
+        *  2) Opérations sur bits par REGISTRE Dn
+        *     Format : 0000 nnn 1 tt mmmrrr   (bit 8 = 1)
+        *     tt : 00=BTST 01=BCHG 10=BCLR 11=BSET
+        *     Le numéro de bit vient de Dn (bits 11-9)
+        * --------------------------------------------------------------- */
+        if ((insn & 0x0100) && ((insn >> 12) & 0xF) == 0x0) {
+            int dn  = (insn >> 9) & 7;
             int op  = (insn >> 6) & 3;
-            int bit = bitsel & ((size == 32) ? 31 : 7);
+            /* Taille : Dn -> 32 bits (long), mémoire -> 8 bits (byte) */
+            int size = (ea_mode == 0) ? 32 : 8;
+            int bit  = cpu->d[dn] & ((size == 32) ? 31 : 7);
             uint32_t mask = 1u << bit;
+
+            uint32_t val = ea_read(cpu, ea_mode, ea_reg, size);
+
             cpu->sr &= ~SR_Z;
             if (!(val & mask)) cpu->sr |= SR_Z;
-            if (op == 1)      val ^= mask;
-            else if (op == 2)  val &= ~mask;
-            else if (op == 3)  val |= mask;
-            if (op != 0) ea_write(cpu, ea_mode, ea_reg, size, val);
+
+            switch (op) {
+                case 0: /* BTST : test seul, pas d'écriture */          break;
+                case 1: val ^=  mask; ea_write(cpu, ea_mode, ea_reg, size, val); break; /* BCHG */
+                case 2: val &= ~mask; ea_write(cpu, ea_mode, ea_reg, size, val); break; /* BCLR */
+                case 3: val |=  mask; ea_write(cpu, ea_mode, ea_reg, size, val); break; /* BSET */
+            }
             return;
         }
-        /* ---------- Immediat arithmetique/logique : ORI/ANDI/SUBI/ADDI/EORI/CMPI ---------- */
-        /* Format : 0000 tttt ss mmm rrr   (tttt pair, bit8=0 => pas bit-ops) */
-        /* ---------- Immediat arithmetique/logique : ORI/ANDI/SUBI/ADDI/EORI/CMPI ----------
-        * Format : 0000 tttt ss mmm rrr
-        *   tttt = 0x0 ORI  | 0x2 ANDI | 0x4 SUBI | 0x6 ADDI | 0xA EORI | 0xC CMPI
-        *   ss   = 00 byte  | 01 word  | 10 long  | 11 INVALIDE
-        * On utilise 4 bits (tttt), PAS 3, sinon ADDI(6) et CMPI(C) sont confondus !
-        */
-        if ((insn & 0xF000) == 0x0000 && (insn & 0x0100) == 0) {
-            int tttt = (insn >> 8) & 0xF;   /* 4 BITS : discriminant complet */
 
-            /* Ne traiter que les vrais immediats arithmetiques/logiques */
-            if (tttt == 0x0 || tttt == 0x2 || tttt == 0x4 ||
-                tttt == 0x6 || tttt == 0xA || tttt == 0xC) {
+        /* ---------------------------------------------------------------
+        *  3) Opérations sur bits IMMÉDIAT
+        *     Format : 0000 100 tt mmmrrr   (bits 11-8 = 1000)
+        *     Le numéro de bit est dans le mot d'extension suivant
+        * --------------------------------------------------------------- */
+        if ((insn & 0x0F00) == 0x0800) {
+            uint16_t bitsel = m68k_read16(cpu, cpu->pc);
+            cpu->pc += 2;
+            int op   = (insn >> 6) & 3;
+            int size = (ea_mode == 0) ? 32 : 8;
+            int bit  = bitsel & ((size == 32) ? 31 : 7);
+            uint32_t mask = 1u << bit;
 
-                int size = (insn >> 6) & 3;   /* 0=byte 1=word 2=long */
+            uint32_t val = ea_read(cpu, ea_mode, ea_reg, size);
 
-                if (size == 3) {
-                    fprintf(stderr, "[M68K] imm size=3 invalide: 0x%04X @ 0x%08X\n",
-                            insn, cpu->pc - 2);
-                    cpu->halted = 1;
-                    return;
-                }
+            cpu->sr &= ~SR_Z;
+            if (!(val & mask)) cpu->sr |= SR_Z;
 
+            switch (op) {
+                case 0: /* BTST */                                      break;
+                case 1: val ^=  mask; ea_write(cpu, ea_mode, ea_reg, size, val); break; /* BCHG */
+                case 2: val &= ~mask; ea_write(cpu, ea_mode, ea_reg, size, val); break; /* BCLR */
+                case 3: val |=  mask; ea_write(cpu, ea_mode, ea_reg, size, val); break; /* BSET */
+            }
+            return;
+        }
+
+        /* ---------------------------------------------------------------
+        *  4) Instructions IMMÉDIATES arithmétiques/logiques
+        *     Format : 0000 ttt s mmmrrr
+        *     ttt : 000=ORI 001=ANDI 010=SUBI 011=ADDI 101=EORI 110=CMPI
+        *     s   : 00=byte 01=word 10=long
+        * --------------------------------------------------------------- */
+        {
+            int subop = (insn >> 9) & 7;
+            int size  = (insn >> 6) & 3;
+
+            /* subop 4 (bit-ops déjà traités) et 7 invalides ici ; size 3 invalide */
+            if (subop != 4 && subop != 7 && size != 3) {
                 int bits = (size == 0) ? 8 : (size == 1) ? 16 : 32;
 
-                fprintf(stderr, "[CASE0-IMM] insn=0x%04X tttt=0x%X size=%d PC=0x%08X\n",
-                        insn, tttt, size, cpu->pc - 2);
-
-                /* Lecture de l'immediat */
+                /* Lecture de l'immédiat */
                 uint32_t imm;
-                if (size == 2) {
+                if (bits == 32) {
                     imm = ((uint32_t)m68k_read16(cpu, cpu->pc) << 16)
                         |  (uint32_t)m68k_read16(cpu, cpu->pc + 2);
                     cpu->pc += 4;
                 } else {
                     imm = m68k_read16(cpu, cpu->pc);
+                    imm &= (bits == 8) ? 0xFF : 0xFFFF;
                     cpu->pc += 2;
-                    if (size == 0) imm &= 0xFF;
                 }
 
-                /* Lecture de l'operande (EA) */
-                uint32_t val = ea_read(cpu, ea_mode, ea_reg, bits);
-
-                uint32_t mask = (bits == 8) ? 0xFF : (bits == 16) ? 0xFFFF : 0xFFFFFFFF;
+                uint32_t dst  = ea_read(cpu, ea_mode, ea_reg, bits);
+                uint32_t mask = (bits == 32) ? 0xFFFFFFFFu : ((1u << bits) - 1);
                 uint32_t msb  = 1u << (bits - 1);
                 uint32_t res;
-                int writeback = 1;
 
-                switch (tttt) {
-                    case 0x0: res = val | imm; break;   /* ORI  */
-                    case 0x2: res = val & imm; break;   /* ANDI */
-                    case 0xA: res = val ^ imm; break;   /* EORI */
-
-                    case 0x4:   /* SUBI : val - imm */
-                    case 0xC: { /* CMPI : val - imm, PAS de writeback */
-                        uint64_t full = (uint64_t)(val & mask) - (uint64_t)(imm & mask);
-                        res = (uint32_t)full & mask;
-                        cpu->sr &= ~0x0F;                                     /* N Z V C (pas X) */
-                        if (res & msb)                     cpu->sr |= (1 << 3); /* N */
-                        if ((res & mask) == 0)             cpu->sr |= (1 << 2); /* Z */
-                        if (full & ((uint64_t)1 << bits))  cpu->sr |= (1 << 0); /* C = emprunt */
-                        if (((val ^ imm) & (val ^ res)) & msb) cpu->sr |= (1 << 1); /* V */
-
-                        if (tttt == 0xC) {
-                            writeback = 0;                  /* CMPI n'ecrit jamais */
-                        } else {
-                            /* SUBI met X = C */
-                            if (cpu->sr & 1) cpu->sr |= (1 << 4);
-                            else             cpu->sr &= ~(1 << 4);
-                        }
-                        goto imm_done;
-                    }
-
-                    case 0x6: { /* ADDI : val + imm */
-                        uint64_t full = (uint64_t)(val & mask) + (uint64_t)(imm & mask);
-                        res = (uint32_t)full & mask;
-                        cpu->sr &= ~0x0F;
-                        if (res & msb)                     cpu->sr |= (1 << 3); /* N */
-                        if ((res & mask) == 0)             cpu->sr |= (1 << 2); /* Z */
-                        if (full & ((uint64_t)1 << bits))  cpu->sr |= (1 << 0); /* C */
-                        if ((~(val ^ imm) & (val ^ res)) & msb) cpu->sr |= (1 << 1); /* V */
-                        if (cpu->sr & 1) cpu->sr |= (1 << 4);  /* X = C */
-                        else             cpu->sr &= ~(1 << 4);
-                        goto imm_done;
-                    }
-
-                    default:
-                        fprintf(stderr, "[M68K] immediat tttt inconnu 0x%X @ 0x%08X\n",
-                                tttt, cpu->pc);
-                        cpu->halted = 1;
-                        return;
+                switch (subop) {
+                    case 0: res = (dst | imm) & mask; break;   /* ORI  */
+                    case 1: res = (dst & imm) & mask; break;   /* ANDI */
+                    case 2: res = (dst - imm) & mask; break;   /* SUBI */
+                    case 3: res = (dst + imm) & mask; break;   /* ADDI */
+                    case 5: res = (dst ^ imm) & mask; break;   /* EORI */
+                    case 6: res = (dst - imm) & mask; break;   /* CMPI */
+                    default: res = dst & mask; break;
                 }
 
-                /* Flags logiques (ORI/ANDI/EORI) : N,Z ; V=C=0 ; X inchange */
-                cpu->sr &= ~0x0F;
-                if (res & msb)         cpu->sr |= (1 << 3);   /* N */
-                if ((res & mask) == 0) cpu->sr |= (1 << 2);   /* Z */
+                
 
-            imm_done:
-                if (writeback)
+                /* ---- Mise à jour des flags ---- */
+                if (subop == 0 || subop == 1 || subop == 5) {
+                    /* Logiques : N,Z modifiés ; V=C=0 ; X inchangé */
+                    cpu->sr &= ~(SR_N | SR_Z | SR_V | SR_C);
+                    if (res & msb)     cpu->sr |= SR_N;
+                    if (res == 0)      cpu->sr |= SR_Z;
+                } else {
+                    /* Arithmétiques : N,Z,V,C (X pour SUBI/ADDI seulement) */
+                    uint32_t a = dst & mask, b = imm & mask, r = res & mask;
+                    cpu->sr &= ~(SR_N | SR_Z | SR_V | SR_C);
+                    if (r & msb)   cpu->sr |= SR_N;
+                    if (r == 0)    cpu->sr |= SR_Z;
+
+                    if (subop == 3) {          /* ADDI : a + b */
+                        if (((a & b & ~r) | (~a & ~b & r)) & msb) cpu->sr |= SR_V;
+                        if (((a & b) | (b & ~r) | (a & ~r)) & msb) cpu->sr |= SR_C;
+                    } else {                   /* SUBI / CMPI : a - b */
+                        if (((~a & b & r) | (a & ~b & ~r)) & msb) cpu->sr |= SR_V;
+                        if (((~a & b) | (b & r) | (~a & r)) & msb) cpu->sr |= SR_C;
+                    }
+
+                    /* X = C uniquement pour SUBI et ADDI (pas CMPI) */
+                    if (subop == 2 || subop == 3) {
+                        if (cpu->sr & SR_C) cpu->sr |= SR_X;
+                        else                cpu->sr &= ~SR_X;
+                    }
+                }
+
+                if (subop == 6) {
+                    fprintf(stderr, "[CMPI] dst=0x%08X imm=0x%08X res=0x%08X Z=%d N=%d C=%d @PC=0x%08X\n",
+                            dst, imm, res,
+                            (cpu->sr & SR_Z) ? 1 : 0,
+                            (cpu->sr & SR_N) ? 1 : 0,
+                            (cpu->sr & SR_C) ? 1 : 0,
+                            cpu->pc);
+                }
+
+                /* CMPI (subop 6) ne réécrit jamais la destination */
+                if (subop != 6)
                     ea_write(cpu, ea_mode, ea_reg, bits, res);
+
                 return;
             }
-            /* sinon : pas un immediat (ex: MOVEP, bit-ops dynamiques...) -> continue */
         }
+
+        /* ---------------------------------------------------------------
+        *  5) Rien n'a matché -> opcode réellement non géré
+        * --------------------------------------------------------------- */
+        fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0x0)\n",
+                insn, cpu->pc - 2);
+        cpu->halted = 1;
         return;
     }
 
@@ -457,6 +491,10 @@ void m68k_step_ops(m68k_t *cpu)
         if (dst_mode == 1) {                          /* MOVEA */
             if (size == 16) val = (uint32_t)(int32_t)(int16_t)val;
             cpu->a[dst_reg] = val;
+
+             /* >>> TRACE ICI <<< */
+            fprintf(stderr, "[MOVEA] A%d <- 0x%08X (size=%d) @PC=0x%08X\n", 
+                                dst_reg, val, size, cpu->pc);
         } else {
             ea_write(cpu, dst_mode, dst_reg, size, val);
             flag_NZ_clearVC(&cpu->sr, val, size);
@@ -466,6 +504,45 @@ void m68k_step_ops(m68k_t *cpu)
 
     /* ---------- 0x4 : JMP/JSR/RTS/RTE/RTR/LEA/NOP/CLR/TST/SWAP/PEA/MOVEM/USP ---------- */
     case 0x4: {
+
+        /* ---- NEGX <ea>  (0100 0000 ss mmmrrr) ---- */
+        if ((insn & 0xFF00) == 0x4000 && ((insn >> 6) & 3) != 3) {
+            int size = ((insn >> 6) & 3) == 0 ? 8 : ((insn >> 6) & 3) == 1 ? 16 : 32;
+            uint32_t v = ea_read(cpu, ea_mode, ea_reg, size);
+            uint32_t mask = mask_of(size);
+            uint32_t x = (cpu->sr & SR_X) ? 1 : 0;
+            uint32_t res = (0 - (v & mask) - x) & mask;
+            flag_sub(&cpu->sr, 0, (v & mask) + x, res, size);
+            /* NEGX : Z n'est effacé que si résultat non nul (règle spéciale) */
+            if (res != 0) cpu->sr &= ~SR_Z;
+            if (cpu->sr & SR_C) cpu->sr |= SR_X; else cpu->sr &= ~SR_X;
+            ea_write(cpu, ea_mode, ea_reg, size, res);
+            return;
+        }
+
+        /* ---- NEG <ea>   (0100 0100 ss mmmrrr) ---- */
+        if ((insn & 0xFF00) == 0x4400 && ((insn >> 6) & 3) != 3) {
+            int size = ((insn >> 6) & 3) == 0 ? 8 : ((insn >> 6) & 3) == 1 ? 16 : 32;
+            uint32_t v = ea_read(cpu, ea_mode, ea_reg, size);
+            uint32_t mask = mask_of(size);
+            uint32_t res = (0 - (v & mask)) & mask;
+            flag_sub(&cpu->sr, 0, v & mask, res, size);   /* calcule N,Z,V,C */
+            if (cpu->sr & SR_C) cpu->sr |= SR_X; else cpu->sr &= ~SR_X;  /* X = C */
+            ea_write(cpu, ea_mode, ea_reg, size, res);
+            return;
+        }
+
+        /* ---- NOT <ea>   (0100 0110 ss mmmrrr) ---- */
+        if ((insn & 0xFF00) == 0x4600 && ((insn >> 6) & 3) != 3) {
+            int size = ((insn >> 6) & 3) == 0 ? 8 : ((insn >> 6) & 3) == 1 ? 16 : 32;
+            uint32_t v = ea_read(cpu, ea_mode, ea_reg, size);
+            uint32_t mask = mask_of(size);
+            uint32_t res = (~v) & mask;
+            flag_NZ_clearVC(&cpu->sr, res, size);   /* N,Z ; V=C=0 ; X inchangé */
+            ea_write(cpu, ea_mode, ea_reg, size, res);
+            return;
+        }
+
         if (insn == 0x4E75) {                        /* RTS */
             cpu->pc   = m68k_read32(cpu, cpu->a[7]);
             cpu->a[7] += 4;
@@ -598,7 +675,9 @@ void m68k_step_ops(m68k_t *cpu)
             }
             return;
         }
-        return;  /* 0x4xxx non implémenté → silently continue (was: stopped=1) */
+        fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0x4 misc-jmp-jsr)", insn, cpu->pc - 2);
+        cpu->halted = 1;   /* stoppe au lieu de boucler */
+        return;
     }
 
     /* ---------- 0x5 : ADDQ / SUBQ / Scc / DBcc ---------- */
@@ -647,6 +726,9 @@ void m68k_step_ops(m68k_t *cpu)
             flag_NZ_clearVC(&cpu->sr, res, size);
             return;
         }
+        fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0x5 addq-subq-scc)", insn, cpu->pc - 2);
+        cpu->halted = 1;   /* stoppe au lieu de boucler */
+        return;
     }
 
     /* ---------- 0x6 : Bcc / BRA / BSR ---------- */
@@ -697,12 +779,12 @@ void m68k_step_ops(m68k_t *cpu)
         return;
     }
 
-    /* ---------- 0xB : CMP / CMPA / EOR ---------- */
+    /* ---------- 0xB : CMP / CMPA / CMPM / EOR ---------- */
     case 0xB: {
         uint8_t dn     = (insn >> 9) & 7;
         uint8_t opmode = (insn >> 6) & 7;
 
-        /* CMPA */
+        /* ---- CMPA (opmode 011=word, 111=long) ---- */
         if (opmode == 0x3 || opmode == 0x7) {
             int size = (opmode == 0x7) ? 32 : 16;
             uint32_t val = ea_read(cpu, ea_mode, ea_reg, size);
@@ -714,17 +796,36 @@ void m68k_step_ops(m68k_t *cpu)
 
         int size = (opmode & 3) == 0 ? 8 : (opmode & 3) == 1 ? 16 : 32;
 
-        if (opmode & 0x4) {                            /* EOR Dn, <ea> */
-            uint32_t val = ea_read(cpu, ea_mode, ea_reg, size);
-            uint32_t res = val ^ (cpu->d[dn] & mask_of(size));
-            ea_write(cpu, ea_mode, ea_reg, size, res);
-            flag_NZ_clearVC(&cpu->sr, res, size);
-        } else {                                        /* CMP <ea>, Dn */
+        if (opmode & 0x4) {
+            /* opmode 4/5/6 : CMPM si mode=001, sinon EOR */
+            if (ea_mode == 0x1) {
+                /* ---- CMPM (Ay)+,(Ax)+ ---- */
+                uint32_t src = ea_read(cpu, 0x3, ea_reg, size);  /* (Ay)+ */
+                uint32_t dst = ea_read(cpu, 0x3, dn,     size);  /* (Ax)+ */
+                uint32_t res = dst - src;
+                flag_sub(&cpu->sr, dst, src, res, size);
+                return;
+            } else {
+                /* ---- EOR Dn, <ea> ---- */
+                uint32_t val = ea_read(cpu, ea_mode, ea_reg, size);
+                uint32_t res = val ^ (cpu->d[dn] & mask_of(size));
+                ea_write(cpu, ea_mode, ea_reg, size, res);
+                flag_NZ_clearVC(&cpu->sr, res, size);
+                return;
+            }
+        } else {
+            /* ---- CMP <ea>, Dn ---- */
             uint32_t val = ea_read(cpu, ea_mode, ea_reg, size);
             uint32_t d   = cpu->d[dn];
             uint32_t res = d - val;
             flag_sub(&cpu->sr, d, val, res, size);
+            return;
         }
+
+        /* jamais atteint, mais garde-fou */
+        fprintf(stderr, "[M68K] 0xB non decode: 0x%04X @ PC=0x%08X\n",
+                insn, cpu->pc - 2);
+        cpu->halted = 1;
         return;
     }
 
@@ -755,6 +856,8 @@ void m68k_step_ops(m68k_t *cpu)
         /* ABCD */
         if ((insn & 0x01F0) == 0x0100) {
             /* non implémenté — silently skip */
+            fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0xC abcd)\n", insn, cpu->pc - 2);
+            cpu->halted = 1;   /* stoppe au lieu de boucler */
             return;
         }
         /* EXG */
@@ -806,6 +909,10 @@ void m68k_step_ops(m68k_t *cpu)
             cpu->sr &= ~(SR_V | SR_C);
             return;
         }
+        /* Cas non géré: AND/OR/MUL ne correspond à aucun sous-cas connu */
+        fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0xC and-mul)", insn, cpu->pc - 2);
+        cpu->halted = 1;   /* stoppe au lieu de boucler */
+        return;
     }
 
     /* ---------- 0xD : ADD / ADDA ---------- */
@@ -858,22 +965,27 @@ void m68k_step_ops(m68k_t *cpu)
         return;
     }
 
+    /* ---------- 0xD : ADD / ADDA - fallback si rien ne matched ---------- */
+    /* (case 0xD n'a pas de fallback explicite car les branches ci-dessus */
+    /*   couvrent tous les opmodes 0-7; ce bloc ne devrait jamais être atteint) */
+
     case 0xE:   /* 1110 : shift / rotate */
         if (((insn >> 6) & 3) == 3) {
-            /* forme memoire : shift 1 bit sur EA - a implementer plus tard */
-            fprintf(stderr, "[M68K] shift memoire non gere: 0x%04X\n", insn);
-            cpu->halted = 1;
+            /* forme memoire (shift 1 bit sur EA) : rare, non implemente */
+            fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0xE shift-mem)",
+                    insn, cpu->pc - 2);
+            cpu->halted = 1;   /* stoppe au lieu de boucler */
+            /* on ne bloque pas : on ignore */
         } else {
-            op_shift_reg(cpu, insn);   /* forme registre */
+            op_shift_reg(cpu, insn);   /* forme registre : notre cas 0xE898 */
         }
-        return;
+        return;   /* <-- return, pas break (cohérent avec le reste du switch) */
 
     /* ---------- default : opcode inconnu ---------- */
     default:
-        fprintf(stderr,
-            "[M68K] OPCODE NON GERE: 0x%04X @ PC=0x%08X\n",
-            insn, cpu->pc - 2);   /* -2 car PC a deja avance apres le fetch */
-        cpu->halted = 1;
+        fprintf(stderr, "[M68K] OPCODE NON GERE: 0x%04X @ PC=0x%08X\n",
+            insn, cpu->pc);
+        cpu->halted = 1;   /* stoppe au lieu de boucler */
         return;
     }
 }
