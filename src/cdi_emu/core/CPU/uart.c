@@ -71,127 +71,88 @@ void uart_poll_host_input(void) {
 #endif
 }
 
-/* ================================================================
- * UART read handler (8-bit only, base 0x80002000)
- *   0x11 UMR | 0x13 USR(RO) | 0x15 UCS | 0x17 UCR
- *   0x19 UTH(WO) | 0x1B URX(RO) | 0x1D UIPCR(RO)
- * ================================================================ */
-// uint8_t uart_read8(bus_t *b, uint32_t addr) {
-//     uint32_t off = addr & 0xFF;
-//     uint8_t *io_regs = uart_io_regs_ptr();
-
-//     fprintf(stderr, "[UART_READ8] addr=%08X off=%02X\n", addr, off);
-
-//     switch (off) {
-
-//     case UART_UMR:   /* 0x11 — Mode Register (lecture) */
-//         fprintf(stderr, "[UMR RD] mode=%02X (bit0=%d)\n",
-//                 b->uart.mode, b->uart.mode & 1);
-//         return b->uart.mode;
-
-//     case UART_USR: { /* 0x13 — Status Register */
-//         uint8_t usr = 0x04;                  /* bit2 TxRDY = toujours pret */
-//         if (b->uart.rx_ready) usr |= 0x01;   /* bit0 RxRDY = donnees dispo */
-//         fprintf(stderr, "[USR RD] usr=%02X (bit0=%d)\n", usr, usr & 1);
-//         return usr;
-//     }
-
-//     case UART_UCS:   /* 0x15 */
-//         return b->uart.clksel;
-
-//     case UART_UCR:   /* 0x17 — command, generalement WO */
-//         return b->uart.cmd;
-
-//     case UART_URX:   /* 0x1B — RX Holding */
-//         b->uart.rx_ready = 0;
-//         return b->uart.rx_buf;
-
-//     default:
-//         return io_regs[off];
-//     }
-// }
-uint8_t uart_read8(bus_t *b, uint32_t addr) {
-    uint32_t off = addr & 0xFF;
+void uart_write8(bus_t *b, uint32_t addr, uint8_t v) {
+    uint32_t off = addr - UART_BASE;  /* <-- CHANGEMENT ! */
     uint8_t *io_regs = uart_io_regs_ptr();
-    uint8_t val = io_regs[off];
+
+    fprintf(stderr, "[UART WR] addr=0x%08X off=0x%02X val=0x%02X\n", addr, off, v);
 
     switch (off) {
 
-    case UART_USR: { /* 0x13 — status register */
-        val = 0x00;
-        if (uart_console_has_input()) val |= 0x01; /* RXRDY */
-        val |= 0x04; /* TXRDY toujours prêt */
-        val |= 0x08; /* TXEMT toujours vide */
+    case UART_MR_OFF:   /* 0x80002010 — Mode Register */
+        b->uart.mode = v;
+        fprintf(stderr, "  -> Mode Register = 0x%02X\n", v);
         break;
-    }
 
-    case UART_UTH: /* 0x19 — registre partagé, lu ici comme RX */
-        if (uart_console_has_input()) {
-            b->uart.rx_buf = uart_console_get_input();
-        }
-        val = b->uart.rx_buf;
+    case UART_SR_OFF:   /* 0x80002011 — Status Register (normalement RO, mais firmware peut l'utiliser comme Clock) */
+        fprintf(stderr, "  -> Clock/Status = 0x%02X\n", v);
+        break;
+
+    case UART_CR_OFF:   /* 0x80002012 — Command Register */
+        b->uart.cmd = v;
+        fprintf(stderr, "  -> Command Register = 0x%02X\n", v);
+        break;
+
+    case UART_DR_OFF:   /* 0x80002013 — Data Register (TX) */
+        b->uart.tx_buf = v;
+        uart_console_putchar((char)v);
+        fprintf(stderr, "  -> Data TX = 0x%02X ('%c')\n",
+                v, (v >= 32 && v < 127) ? v : '.');
         break;
 
     default:
+        fprintf(stderr, "  -> Offset inconnu 0x%02X\n", off);
+        break;
+    }
+    
+    io_regs[off] = v;
+}
+
+uint8_t uart_read8(bus_t *b, uint32_t addr) {
+    uint32_t off = addr - UART_BASE;  /* <-- CHANGEMENT ! */
+    uint8_t *io_regs = uart_io_regs_ptr();
+    uint8_t val = io_regs[off];
+
+    fprintf(stderr, "[UART RD] addr=0x%08X off=0x%02X\n", addr, off);
+
+    switch (off) {
+
+    case UART_MR_OFF:   /* Mode Register */
+        val = b->uart.mode;
+        fprintf(stderr, "  -> Mode = 0x%02X\n", val);
+        break;
+
+    case UART_SR_OFF: { /* Status Register */
+        val = 0x00;
+        if (uart_console_has_input()) val |= 0x01;  /* RxRDY */
+        val |= 0x04;  /* TxRDY (toujours prêt) */
+        val |= 0x08;  /* TxEMT (toujours vide en HLE) */
+        fprintf(stderr, "  -> Status = 0x%02X (RxRDY=%d, TxRDY=1, TxEMT=1)\n",
+                val, val & 0x01);
+        break;
+    }
+
+    case UART_CR_OFF:   /* Command Register */
+        val = b->uart.cmd;
+        fprintf(stderr, "  -> Command = 0x%02X\n", val);
+        break;
+
+    case UART_DR_OFF:   /* Data Register (RX) */
+        if (uart_console_has_input()) {
+            val = uart_console_get_input();
+            fprintf(stderr, "  -> Data RX = 0x%02X ('%c')\n",
+                    val, (val >= 32 && val < 127) ? val : '.');
+        } else {
+            val = b->uart.rx_buf;
+            fprintf(stderr, "  -> Data RX (vide) = 0x%02X\n", val);
+        }
+        break;
+
+    default:
+        fprintf(stderr, "  -> Offset inconnu 0x%02X\n", off);
         break;
     }
 
     io_regs[off] = val;
     return val;
-}
-
-/* ================================================================
- * UART write handler (8-bit only)
- * ================================================================ */
-// void uart_write8(bus_t *b, uint32_t addr, uint8_t v) {
-//     uint32_t off = addr & 0xFF;
-//     uint8_t *io_regs = uart_io_regs_ptr();
-
-//     switch (off) {
-
-//     case UART_UTH:   /* 0x19 — TX : affiche le caractere sur stdout */
-//         b->uart.tx_buf = v;
-//         putchar((char)v);
-//         fflush(stdout);
-//         return;
-
-//     case UART_UCR:   /* 0x17 */
-//         b->uart.cmd = v;
-//         break;
-
-//     case UART_UMR:   /* 0x11 */
-//         fprintf(stderr, "[UMR WR] = %02X\n", v);
-//         b->uart.mode = v;
-//         break;
-
-//     case UART_UCS:   /* 0x15 */
-//         b->uart.clksel = v;
-//         break;
-//     }
-//     io_regs[off] = v;
-// }
-void uart_write8(bus_t *b, uint32_t addr, uint8_t v) {
-    uint32_t off = addr & 0xFF;
-    uint8_t *io_regs = uart_io_regs_ptr();
-
-    switch (off) {
-
-    case UART_UTH:   /* 0x19 — TX */
-        b->uart.tx_buf = v;
-        uart_console_putchar((char)v);   /* <-- remplace putchar()/fflush() */
-        return;
-
-    case UART_UCR:   /* 0x17 */
-        b->uart.cmd = v;
-        break;
-
-    case UART_UMR:   /* 0x11 */
-        b->uart.mode = v;
-        break;
-
-    case UART_UCS:   /* 0x15 */
-        b->uart.clksel = v;
-        break;
-    }
-    io_regs[off] = v;
 }

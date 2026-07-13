@@ -154,6 +154,17 @@ uint32_t bus_read32(bus_t *b, uint32_t addr) {
 
 void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
 
+    /* dans bus_write8 ou équivalent */
+    if (addr >= 0x00400000 && addr < 0x80000000) {
+        fprintf(stderr, "[HW WRITE8] addr=0x%08X val=0x%02X\n",
+                addr, v);
+    }
+
+    if (addr >= 0x00200000 && addr < 0x00210000) {
+        fprintf(stderr, "[IO WRITE] addr=0x%08X val=0x%02X\n",
+                addr, v & 0xFF);
+    }
+
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
         scc66470_write8(&g_video, addr, v);
         return;
@@ -166,7 +177,7 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
         return;
     }
 
-    if (addr >= IO_BASE && addr < IO_BASE + IO_SIZE) {
+    if (addr >= IO_BASE && addr < (IO_BASE + IO_SIZE)) {
         if ((addr & 0xFFFF00) == 0x002000) { uart_write8(b, addr, v); return; }
         io_regs[addr - IO_BASE] = v;
         return;
