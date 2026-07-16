@@ -10,9 +10,6 @@
 #define IO_BASE  0x80000000
 #define IO_SIZE  0x00080000
 
-#define UART_BASE  0x80002010
-#define UART_SIZE  0x10
-
 /* Global bus pointer so uart_feed() / uart_poll_host_input() work
    without having the bus_t* passed down from main.  Set in bus_create(),
    cleared in bus_destroy(). */
@@ -97,6 +94,11 @@ static void io_write_stub(uint32_t addr, uint16_t v) {
 
 uint8_t bus_read8(bus_t *b, uint32_t addr) {
 
+     if ((addr & 0xFFFFFFF0u) == 0x80002010u) {
+        //fprintf(stderr, "[BUS RD8] UART hit addr=%08X\n", addr);
+        return uart_read8(b, addr);
+    }
+
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
         return scc66470_read8(&g_video, addr);
     }
@@ -154,16 +156,16 @@ uint32_t bus_read32(bus_t *b, uint32_t addr) {
 
 void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
 
-    /* dans bus_write8 ou équivalent */
-    if (addr >= 0x00400000 && addr < 0x80000000) {
-        fprintf(stderr, "[HW WRITE8] addr=0x%08X val=0x%02X\n",
-                addr, v);
-    }
+    // /* dans bus_write8 ou équivalent */
+    // if (addr >= 0x00400000 && addr < 0x80000000) {
+    //     // fprintf(stderr, "[HW WRITE8] addr=0x%08X val=0x%02X\n",
+    //     //         addr, v);
+    // }
 
-    if (addr >= 0x00200000 && addr < 0x00210000) {
-        fprintf(stderr, "[IO WRITE] addr=0x%08X val=0x%02X\n",
-                addr, v & 0xFF);
-    }
+    // if (addr >= 0x00200000 && addr < 0x00210000) {
+    //     fprintf(stderr, "[IO WRITE] addr=0x%08X val=0x%02X\n",
+    //             addr, v & 0xFF);
+    // }
 
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
         scc66470_write8(&g_video, addr, v);
