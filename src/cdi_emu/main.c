@@ -53,10 +53,12 @@ int main(void) {
         be = slave_hle_create();
         fprintf(stderr, "[SLAVE] backend = %s\n", be->name);
     }
+    
+    /* après création du slave et du bus : */
+    slave_hle_set_uart(be, (uart_inject_fn)uart_inject_rx, bus);
+
     slave_attach(&g_slave, be);
     slave_reset(&g_slave);
-
-
 
     m68k_reset(&cpu);
 
@@ -74,7 +76,7 @@ int main(void) {
      * - trace_max    : nombre d'instructions avant arrêt (défaut=0 → illimité)
      * ================================================================ */
     int  trace_enable = 1;
-    long trace_max = 1000;
+    long trace_max = 10000000000;
     bool enter_service_mode = true;
     {
         //const char *env = getenv("EMU_TRACE");
@@ -116,9 +118,10 @@ int main(void) {
                 int in_trampoline_gen = (pc_before >= 0x1805E8 && pc_before <= 0x1805FA);
                 
                 if (!in_clear_loop && !in_trampoline_gen) {
-                    printf("[%6ld] PC=%08X op=%04X D0=%08X A3=%08X A5=%08X\n",
-                            traced, pc_before, bus_read16(bus, pc_before),
-                            cpu.d[0], cpu.a[3], cpu.a[5]);
+                    // printf("[%6ld] PC=%08X op=%04X \nD0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\nA0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
+                    //         traced, pc_before, bus_read16(bus, pc_before),
+                    //         cpu.d[0], cpu.d[1], cpu.d[2], cpu.d[3], cpu.d[4], cpu.d[5], cpu.d[6], cpu.d[7],
+                    //         cpu.a[0], cpu.a[1], cpu.a[2], cpu.a[3], cpu.a[4], cpu.a[5], cpu.a[6], cpu.a[7]);
                 }
 
                 // printf("[STEP %6ld] PC=0x%08X -> opcode=0x%04X "

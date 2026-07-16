@@ -230,9 +230,9 @@ void op_shift_reg(m68k_t *cpu, uint16_t op) {
     res &= mask;
     cpu->d[reg] = (cpu->d[reg] & ~mask) | res;
 
-    fprintf(stderr, "[SHIFT] op=%04X type=%d dir=%d size=%d cnt=%u  in=%08X out=%08X\n",
-        op, type, dir, size, count,
-        (unsigned)(cpu->d[reg]), (unsigned)res);
+    // fprintf(stderr, "[SHIFT] op=%04X type=%d dir=%d size=%d cnt=%u  in=%08X out=%08X\n",
+    //     op, type, dir, size, count,
+    //     (unsigned)(cpu->d[reg]), (unsigned)res);
 
     int N = (res & (1u << (bits - 1))) ? 1 : 0;
     int Z = (res == 0) ? 1 : 0;
@@ -453,14 +453,14 @@ void m68k_step_ops(m68k_t *cpu)
                     }
                 }
 
-                if (subop == 6) {
-                    fprintf(stderr, "[CMPI] dst=0x%08X imm=0x%08X res=0x%08X Z=%d N=%d C=%d @PC=0x%08X\n",
-                            dst, imm, res,
-                            (cpu->sr & SR_Z) ? 1 : 0,
-                            (cpu->sr & SR_N) ? 1 : 0,
-                            (cpu->sr & SR_C) ? 1 : 0,
-                            cpu->pc);
-                }
+                // if (subop == 6) {
+                //     fprintf(stderr, "[CMPI] dst=0x%08X imm=0x%08X res=0x%08X Z=%d N=%d C=%d @PC=0x%08X\n",
+                //             dst, imm, res,
+                //             (cpu->sr & SR_Z) ? 1 : 0,
+                //             (cpu->sr & SR_N) ? 1 : 0,
+                //             (cpu->sr & SR_C) ? 1 : 0,
+                //             cpu->pc);
+                // }
 
                 /* CMPI (subop 6) ne réécrit jamais la destination */
                 if (subop != 6)
@@ -493,8 +493,8 @@ void m68k_step_ops(m68k_t *cpu)
             cpu->a[dst_reg] = val;
 
              /* >>> TRACE ICI <<< */
-            fprintf(stderr, "[MOVEA] A%d <- 0x%08X (size=%d) @PC=0x%08X\n", 
-                                dst_reg, val, size, cpu->pc);
+            // fprintf(stderr, "[MOVEA] A%d <- 0x%08X (size=%d) @PC=0x%08X\n", 
+            //                     dst_reg, val, size, cpu->pc);
         } else {
             ea_write(cpu, dst_mode, dst_reg, size, val);
             flag_NZ_clearVC(&cpu->sr, val, size);
