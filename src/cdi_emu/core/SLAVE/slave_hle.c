@@ -16,6 +16,8 @@ typedef struct {
     uint8_t last_request;
     uint8_t ack;
     uint8_t status;   /* 0x01 quand l'ack est prêt */
+    
+    uint8_t response;
 
     /* accès UART pour injecter la réponse RX */
     uart_inject_fn inject;
@@ -40,11 +42,9 @@ static void hle_write8(void *ctx, uint32_t addr, uint8_t val)
         c->last_request = val;
         fprintf(stderr, "[SLAVE] CMD 0x%02X @200007\n", val);
 
-        /* Réponse : le slave renvoie un octet via l'UART RX.
-           ⚠️ Valeur 0x00 = À L'AVEUGLE (à ajuster selon le dump 0x181272) */
-        if (c->inject && c->bus) {
-            uint8_t reply = 0x00;        /* <-- valeur à confirmer */
-            c->inject(c->bus, reply);
+        switch (val) {
+        case 0xF0: c->response = 0xF0; break;    /* test 10 : echo $F0 */
+        default:   c->response = val;  break;
         }
     }
 }
@@ -52,8 +52,10 @@ static void hle_write8(void *ctx, uint32_t addr, uint8_t val)
 static uint8_t hle_read8(void *ctx, uint32_t addr)
 {
     hle_ctx_t *c = ctx;
-    if (addr == REG_STATUS)              /* 0x200005 */
-        return c->status;
+    if (addr == REG_STATUS) {             /* 0x200005 */
+        fprintf(stderr, "[SLAVE RD] @200005 -> 0x%02X\n", c->response);
+        return c->response;
+    }
     return 0xFF;
 }
 
