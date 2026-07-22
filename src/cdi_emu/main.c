@@ -139,17 +139,37 @@ int main(void) {
 
                 if (trace_zone) {
                     uint32_t pc_before = cpu.pc;
-                    
-                    if (cpu.pc == 0x0018228C && !cksum_start_captured) {
-                        cksum_start_captured = 1;
-                    }
 
-                    if (cksum_start_captured) {
-                        printf("[%6ld] PC=%08X op=%04X \nD0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\nA0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
-                            traced, pc_before, bus_read16(bus, pc_before),
-                            cpu.d[0], cpu.d[1], cpu.d[2], cpu.d[3], cpu.d[4], cpu.d[5], cpu.d[6], cpu.d[7],
-                            cpu.a[0], cpu.a[1], cpu.a[2], cpu.a[3], cpu.a[4], cpu.a[5], cpu.a[6], cpu.a[7]);
-                    }
+                    // if (cpu.pc == 0x0018228C && !cksum_start_captured) {
+                    //     printf("===== Checksum start =====\n");
+                    //     cksum_start_captured = 1;
+                    // }
+
+                    // if (cpu.pc >= 0x181cf0 && cpu.pc <= 0x181cfa) {
+                    //      printf("[%6ld] PC=%08X op=%04X \nD0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\nA0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
+                    //         traced, pc_before, bus_read16(bus, pc_before),
+                    //         cpu.d[0], cpu.d[1], cpu.d[2], cpu.d[3], cpu.d[4], cpu.d[5], cpu.d[6], cpu.d[7],
+                    //         cpu.a[0], cpu.a[1], cpu.a[2], cpu.a[3], cpu.a[4], cpu.a[5], cpu.a[6], cpu.a[7]);
+                    // }
+
+                    // if(cpu.pc==0x182298||cpu.pc==0x1822a0||cpu.pc==0x1822aa)
+                    //     fprintf(stderr,"[CK] PC=%06X D1=%04X A1=%06X (A1)=%02X\n",
+                    //             cpu.pc, cpu.d[1]&0xFFFF, cpu.a[1], bus_read8(bus, cpu.a[1]));
+
+                    // if (cpu.pc >= 0x00181cf0 && cpu.pc <= 0x00181d5c) {
+                    //     fprintf(stderr, "[HEXDISP] PC=%06X op=%04X D0=%08X D1=%08X\n",
+                    //             cpu.pc, bus_read16(bus, cpu.pc), cpu.d[0], cpu.d[1]);
+                    // }
+
+                    // if (cpu.pc == 0x00181d0e) {
+                    //     fprintf(stderr, "[DISP-CKSUM] D1=%08X A2=%08X\n", cpu.d[1], cpu.a[2]);
+                    // }
+
+                    // if (cpu.pc == 0x181cfa) {
+                    //     printf("[CPU] Halted, reached desired PC\n");
+                    //     cpu.halted = 1;
+                    //     break;
+                    // }
 
                 }
 

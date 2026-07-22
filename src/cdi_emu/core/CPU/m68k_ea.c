@@ -4,28 +4,74 @@
 #include <stdio.h>
 
 
-uint32_t ea_read(m68k_t *cpu, uint8_t mode, uint8_t reg, int size)
-{
-    uint32_t raw = ea_calc(cpu, mode, reg, size);
-    if ((raw & 0xF0000000u) == 0xF0000000u) return cpu->d[raw & 7];
-    if ((raw & 0xF0000000u) == 0xE0000000u) return cpu->a[raw & 7];
-    if (size == 8)  return m68k_read8 (cpu, raw);
-    if (size == 16) return m68k_read16(cpu, raw);
-    return m68k_read32(cpu, raw);
-}
+// uint32_t ea_read(m68k_t *cpu, uint8_t mode, uint8_t reg, int size)
+// {
+//     uint32_t raw = ea_calc(cpu, mode, reg, size);
+//     if ((raw & 0xF0000000u) == 0xF0000000u) return cpu->d[raw & 7];
+//     if ((raw & 0xF0000000u) == 0xE0000000u) return cpu->a[raw & 7];
+//     if (size == 8)  return m68k_read8 (cpu, raw);
+//     if (size == 16) return m68k_read16(cpu, raw);
+//     return m68k_read32(cpu, raw);
+// }
 
+
+// void ea_write(m68k_t *cpu, uint8_t mode, uint8_t reg, int size, uint32_t val)
+// {
+//     uint32_t raw = ea_calc(cpu, mode, reg, size);
+//     if ((raw & 0xF0000000u) == 0xF0000000u) { cpu->d[raw & 7] = val; return; }
+//     if ((raw & 0xF0000000u) == 0xE0000000u) { cpu->a[raw & 7] = val; return; }
+//     if (size == 8)       bus_write8 (cpu->bus, raw, (uint8_t)val);
+//     else if (size == 16) bus_write16(cpu->bus, raw, (uint16_t)val);
+//     else                 bus_write32(cpu->bus, raw, val);
+// }
 
 void ea_write(m68k_t *cpu, uint8_t mode, uint8_t reg, int size, uint32_t val)
 {
     uint32_t raw = ea_calc(cpu, mode, reg, size);
-    if ((raw & 0xF0000000u) == 0xF0000000u) { cpu->d[raw & 7] = val; return; }
-    if ((raw & 0xF0000000u) == 0xE0000000u) { cpu->a[raw & 7] = val; return; }
+
+    /* Dn : préserver les bits de poids fort selon la taille */
+    if ((raw & 0xF0000000u) == 0xF0000000u) {
+        int r = raw & 7;
+        if (size == 8)       cpu->d[r] = (cpu->d[r] & ~0x000000FFu) | (val & 0x000000FFu);
+        else if (size == 16) cpu->d[r] = (cpu->d[r] & ~0x0000FFFFu) | (val & 0x0000FFFFu);
+        else                 cpu->d[r] = val;
+        return;
+    }
+
+    /* An : toujours écrit 32 bits (le sign-extend .w est géré par MOVEA/ADDA...) */
+    if ((raw & 0xF0000000u) == 0xE0000000u) {
+        cpu->a[raw & 7] = val;
+        return;
+    }
+
     if (size == 8)       bus_write8 (cpu->bus, raw, (uint8_t)val);
     else if (size == 16) bus_write16(cpu->bus, raw, (uint16_t)val);
     else                 bus_write32(cpu->bus, raw, val);
 }
 
+uint32_t ea_read(m68k_t *cpu, uint8_t mode, uint8_t reg, int size)
+{
+    uint32_t raw = ea_calc(cpu, mode, reg, size);
 
+    /* Dn : ne retourner que la partie utile selon la taille */
+    if ((raw & 0xF0000000u) == 0xF0000000u) {
+        uint32_t v = cpu->d[raw & 7];
+        if (size == 8)  return v & 0x000000FFu;
+        if (size == 16) return v & 0x0000FFFFu;
+        return v;
+    }
+
+    /* An : idem (rare en lecture .w mais on masque par cohérence) */
+    if ((raw & 0xF0000000u) == 0xE0000000u) {
+        uint32_t v = cpu->a[raw & 7];
+        if (size == 16) return v & 0x0000FFFFu;
+        return v;
+    }
+
+    if (size == 8)  return m68k_read8 (cpu, raw);
+    if (size == 16) return m68k_read16(cpu, raw);
+    return m68k_read32(cpu, raw);
+}
 
 uint32_t ea_calc(m68k_t *cpu, uint8_t mode, uint8_t reg, int size)
 {
