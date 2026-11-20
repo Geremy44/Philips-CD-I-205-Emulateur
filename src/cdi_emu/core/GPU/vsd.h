@@ -39,8 +39,9 @@ typedef struct vsd {
 void     vsd_reset(vsd_t *v);
 void     vsd_command(vsd_t *v, uint32_t word);
 
-/* Convert a plane-A pixel value (V7..V0 of the master VSC) to ARGB8888 */
-uint32_t vsd_pixel_a(const vsd_t *v, uint8_t value);
+/* Combine plane A (master VSC, V7..V0) and plane B (slave VSC, V15..V8)
+ * pixel values into ARGB8888. a_on / b_on: that VSC is displaying (DE). */
+uint32_t vsd_mix(const vsd_t *v, uint8_t a, int a_on, uint8_t b, int b_on);
 
 /* Overlay the hardware cursor on an ARGB frame (w x h, row pitch in pixels) */
 void     vsd_draw_cursor(const vsd_t *v, uint32_t *argb, int w, int h, int pitch);

@@ -16,7 +16,7 @@
 
 Avec la ROM `CDI205-00_PS-7211_REL.2.1`, l'émulateur démarre CD-RTOS jusqu'au
 **menu principal du CD-i, en couleurs** (fond, logo PHILIPS, boutons INFO /
-SETTINGS / DIM / MEMORY, curseur matériel) :
+SETTINGS / DIM / MEMORY / OPEN, curseur matériel) :
 
 ![Menu du CD-i 205 rendu par l'émulateur](src/cdi_emu/menu_cdi_boot.png)
 
@@ -28,13 +28,15 @@ Ce qui fonctionne :
   lecture-modification-écriture corrects.
 - **Périphériques internes du 68070** : timer T0/T1/T2 (tick OS-9 à 100 Hz),
   registres de priorité PICR1/PICR2, UART (console SDL).
-- **Vidéo** : contrôleur SCC66470 d'après sa datasheet — programmes ICA/DCA,
+- **Vidéo** : les deux SCC66470 d'après leur datasheet (maître = plan A en
+  DRAM banque 1, esclave = plan B en banque 2) — programmes ICA/DCA,
   fichiers bitmap / run-length / mosaïque en 4 et 8 bits/pixel, bordure,
-  résolutions — puis le V.S.D. (palette CLUT 256 couleurs, codage CLUT7/CLUT8,
-  clé de transparence, curseur).
+  résolutions — puis le V.S.D. (palette CLUT 256 couleurs en 4 banques,
+  codage CLUT7/CLUT8, clé de transparence par plan, ordre des plans,
+  superposition, curseur).
 
-Pas encore émulé : plan B (SCC66470 esclave) et mixage des plans,
-interruptions UART/I²C, CDIC (lecture de disque), audio, entrées (manette /
+Pas encore émulé : mixage pondéré des plans, DYUV/RGB555, interruptions
+UART/I²C, CDIC (lecture de disque), audio, entrées (manette /
 télécommande), cartouche FMV.
 
 ### Options de debug (variables d'environnement)
@@ -64,8 +66,8 @@ src/cdi_emu/
     │   ├── uart.c/h          ← UART du 68070
     │   └── uart_console.c/h  ← terminal UART (SDL2 + SDL2_ttf)
     ├── GPU/
-    │   ├── scc66470.c/h      ← contrôleur vidéo SCC66470 (registres, ICA/DCA, rendu)
-    │   ├── vsd.c/h           ← V.S.D. : palette, codage, transparence, curseur
+    │   ├── scc66470.c/h      ← contrôleur vidéo SCC66470 ×2 (registres, ICA/DCA, rendu)
+    │   ├── vsd.c/h           ← V.S.D. : palette, codage, transparence, plans, curseur
     │   └── video_display.c/h ← fenêtre vidéo SDL2
     ├── SLAVE/                ← co-processeur 68HC05 (HLE, squelette LLE)
     └── CDIC/                 ← contrôleur CD (stub)
@@ -110,7 +112,9 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 | Implémentation timers 68070 | ✅ Terminé |
 | Implémentation UART (sans interruptions) | ✅ Terminé |
 | SCC66470 : ICA/DCA, bitmap, run-length, mosaïque | ✅ Terminé (plan A) |
-| V.S.D. : palette, transparence, curseur | ⚠️ En cours (plan B, mixage) |
+| SCC66470 esclave (plan B) | ✅ Terminé |
+| V.S.D. : palette, transparence, ordre des plans, curseur | ✅ Terminé (superposition) |
+| V.S.D. : mixage pondéré, DYUV | 🔲 À démarrer |
 | Analyse CDIC | ⚠️ En cours |
 | Émulation NVRAM | ⚠️ En cours |
 | Entrées (manette, télécommande via 68HC05) | 🔲 À démarrer |

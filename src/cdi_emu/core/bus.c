@@ -50,8 +50,20 @@ static bus_t *g_bus = NULL;
 bus_t *bus_get_global(void) { return g_bus; }
 
 /* Shared video controller and CDIC instances used by the bus */
+/* The 205 has two SCC66470: the master (registers $1FFFE0-$1FFFFF, plane A,
+ * DRAM bank 1) and the slave (registers $1FFFC0-$1FFFDF, plane B, DRAM
+ * bank 2). Slave addresses are shifted by +$20 so both share the register
+ * definitions of scc66470.h. */
 static scc66470_t g_video;
-scc66470_t *bus_get_video(bus_t *b) { (void)b; return &g_video; }
+static scc66470_t g_video_slave;
+scc66470_t *bus_get_video(bus_t *b)       { (void)b; return &g_video; }
+scc66470_t *bus_get_video_slave(bus_t *b) { (void)b; return &g_video_slave; }
+
+static scc66470_t *vsc_select(uint32_t *addr)
+{
+    if (*addr < 0x1FFFE0u) { *addr += 0x20u; return &g_video_slave; }
+    return &g_video;
+}
 static cdic_t     g_cdic;
 
 /* SCC68070 on-chip timer + interrupt priority registers */
@@ -116,6 +128,8 @@ bus_t *bus_create(void) {
     /* Initialize on-chip peripherals */
     uart_init();
     scc66470_init(&g_video);
+    scc66470_init(&g_video_slave);
+    g_video_slave.ica_pointer = 0x80400u;   /* Table 8: slave dual, bank 1 disabled */
 
     /* Set up the slave co-processor (HLE mode) */
     b->slave = slave_hle_create();
@@ -198,7 +212,9 @@ uint8_t bus_read8(bus_t *b, uint32_t addr) {
 
     /* SCC66470 video controller registers */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
-        uint8_t v = scc66470_read8(&g_video, addr);
+        uint32_t a = addr;
+        scc66470_t *vsc = vsc_select(&a);
+        uint8_t v = scc66470_read8(vsc, a);
         video_log("R8", addr, v);
         return v;
     }
@@ -235,7 +251,11 @@ uint8_t bus_read8(bus_t *b, uint32_t addr) {
 uint16_t bus_read16(bus_t *b, uint32_t addr) {
     /* SCC66470 16-bit register access */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF)
-        return scc66470_read16(&g_video, addr);
+    {
+        uint32_t a = addr;
+        scc66470_t *vsc = vsc_select(&a);
+        return scc66470_read16(vsc, a);
+    }
 
     /* Slave co-processor: assemble from two 8-bit reads */
     if (addr >= 0x200000 && addr <= 0x207FFF)
@@ -281,7 +301,9 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
 
     /* SCC66470 video controller registers */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
-        scc66470_write8(&g_video, addr, v);
+        uint32_t a = addr;
+        scc66470_t *vsc = vsc_select(&a);
+        scc66470_write8(vsc, a, v);
         video_log("W8", addr, v);
         return;
     }
@@ -313,7 +335,9 @@ void bus_write16(bus_t *b, uint32_t addr, uint16_t v) {
 
     /* SCC66470 video controller 16-bit registers */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
-        scc66470_write16(&g_video, addr, v);
+        uint32_t a = addr;
+        scc66470_t *vsc = vsc_select(&a);
+        scc66470_write16(vsc, a, v);
         return;
     }
 

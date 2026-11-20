@@ -87,6 +87,7 @@ int main(int argc, char* argv[]) {
 
     /* Pointeur vers le contrôleur vidéo possédé par le bus */
    scc66470_t *video = bus_get_video(bus);
+   scc66470_t *video_b = bus_get_video_slave(bus);
    onchip68070_t *onchip = bus_get_onchip(bus);
 
    debug_rom_checksum(bus);
@@ -180,6 +181,7 @@ int main(int argc, char* argv[]) {
 
         /* Advance video timing by the consumed cycles */
         scc66470_tick(video, cycles);
+        scc66470_tick(video_b, cycles);
 
         /* On-chip timer, then present the highest pending interrupt */
         onchip68070_tick(onchip, cycles);

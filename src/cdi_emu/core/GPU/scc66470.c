@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ICA_POINTER    0x00400u   /* 256K DRAM, bank 1 enabled (Table 8) */
+
 static int video_log_enabled(void)
 {
     static int state = -1;
@@ -27,6 +29,7 @@ static void video_log(const char *op, uint32_t addr, uint16_t value)
 void scc66470_init(scc66470_t *v)
 {
     memset(v, 0, sizeof(*v));
+    v->ica_pointer = ICA_POINTER;
     for (int i = 0; i < 256; i++)
         v->clut[i] = 0xFF000000u | ((uint32_t)i << 16) | ((uint32_t)i << 8) | (uint32_t)i;
 }
@@ -150,7 +153,6 @@ void scc66470_set_clut_entry(scc66470_t *v, int index, uint16_t rgb555)
  * ====================================================================== */
 
 #define VA_MASK        0xFFFFFu   /* the VSC addresses 1 MB of DRAM */
-#define ICA_POINTER    0x00400u   /* 256K DRAM, bank 1 enabled (Table 8) */
 #define ICA_MAX_INSNS  2048       /* safety bound on one ICA program */
 
 /* Working display state, modified by ICA/DCA instructions */
@@ -338,7 +340,8 @@ void scc66470_render(const scc66470_t *v, const uint8_t *dram, uint32_t dram_siz
 
     /* ICA: vertical retrace control program */
     if (ic || dc)
-        out->ica_count = run_control(&s, &m, ICA_POINTER, ICA_MAX_INSNS, CTX_ICA);
+        out->ica_count = run_control(&s, &m, v->ica_pointer ? v->ica_pointer : ICA_POINTER,
+                                     ICA_MAX_INSNS, CTX_ICA);
     out->vsr_start = s.vac;
 
     /* Geometry (uses SS after the ICA, which may have changed it) */

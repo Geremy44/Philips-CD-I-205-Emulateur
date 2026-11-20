@@ -32,7 +32,8 @@ static SDL_Window   *win = NULL;
 static SDL_Renderer *ren = NULL;
 static SDL_Texture  *tex = NULL;
 static uint32_t     *pixels = NULL;    /* ARGB8888, SCC_OUT_MAX_W x SCC_OUT_MAX_H */
-static scc_frame_t  *frame  = NULL;
+static scc_frame_t  *frame  = NULL;   /* plane A: master VSC */
+static scc_frame_t  *frame_b = NULL;  /* plane B: slave VSC */
 static vsd_t         vsd;
 static int           initialized = 0;
 static uint32_t      window_id = 0;
@@ -77,10 +78,11 @@ void video_display_init(void)
     tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
                             SCC_OUT_MAX_W, SCC_OUT_MAX_H);
     pixels = calloc((size_t)SCC_OUT_MAX_W * SCC_OUT_MAX_H, sizeof(uint32_t));
-    frame  = calloc(1, sizeof(*frame));
-    if (!tex || !pixels || !frame) {
+    frame   = calloc(1, sizeof(*frame));
+    frame_b = calloc(1, sizeof(*frame_b));
+    if (!tex || !pixels || !frame || !frame_b) {
         fprintf(stderr, "[video_display] texture/buffer allocation failed: %s\n", SDL_GetError());
-        free(pixels); free(frame); pixels = NULL; frame = NULL;
+        free(pixels); free(frame); free(frame_b); pixels = NULL; frame = NULL; frame_b = NULL;
         if (tex) SDL_DestroyTexture(tex);
         SDL_DestroyRenderer(ren); SDL_DestroyWindow(win);
         tex = NULL; ren = NULL; win = NULL;
@@ -99,30 +101,46 @@ uint32_t video_display_get_window_id(void)
 }
 
 /* Log display state changes (EMU_VIDEO_LOG=1) */
-static void log_frame_changes(const scc66470_t *v, const scc_frame_t *f)
+typedef struct {
+    uint16_t dcr, dcr2;
+    uint32_t vsr;
+    int      bep_count;
+    uint32_t bep[SCC_BEP_MAX];
+} log_state_t;
+
+static void log_frame_changes(char plane, const scc66470_t *v, const scc_frame_t *f)
 {
-    static uint16_t last_dcr = 0xFFFF, last_dcr2 = 0xFFFF;
-    static uint32_t last_vsr = 0xFFFFFFFFu;
-    static int      last_bep_count = -1;
-    static uint32_t last_bep[SCC_BEP_MAX];
+    static log_state_t st[2] = { { 0xFFFF, 0xFFFF, 0xFFFFFFFFu, -1, {0} },
+                                 { 0xFFFF, 0xFFFF, 0xFFFFFFFFu, -1, {0} } };
+    log_state_t *l = &st[plane == 'B'];
+    #define last_dcr       l->dcr
+    #define last_dcr2      l->dcr2
+    #define last_vsr       l->vsr
+    #define last_bep_count l->bep_count
+    #define last_bep       l->bep
 
     if (!video_log_on()) return;
 
     if (v->dcr != last_dcr || v->dcr2 != last_dcr2 || f->vsr_start != last_vsr) {
-        fprintf(stderr, "[VIDEO] DE=%d DCR=%04X DCR2=%04X CSR=%04X ICA=%d insns "
+        fprintf(stderr, "[VIDEO %c] DE=%d DCR=%04X DCR2=%04X CSR=%04X ICA=%d insns "
                         "-> start=%05X %dx%d\n",
-                f->enabled, v->dcr, v->dcr2, v->csr_control, f->ica_count,
+                plane, f->enabled, v->dcr, v->dcr2, v->csr_control, f->ica_count,
                 f->vsr_start, f->width, f->height);
         last_dcr = v->dcr; last_dcr2 = v->dcr2; last_vsr = f->vsr_start;
     }
     if (f->bep_count != last_bep_count ||
         memcmp(last_bep, f->bep, (size_t)f->bep_count * sizeof(uint32_t)) != 0) {
-        fprintf(stderr, "[VIDEO] BEP CONTROL x%d:", f->bep_count);
+        fprintf(stderr, "[VIDEO %c] BEP CONTROL x%d:", plane, f->bep_count);
         for (int i = 0; i < f->bep_count; i++) fprintf(stderr, " %08X", f->bep[i]);
         fprintf(stderr, "\n");
         last_bep_count = f->bep_count;
         memcpy(last_bep, f->bep, (size_t)f->bep_count * sizeof(uint32_t));
     }
+    #undef last_dcr
+    #undef last_dcr2
+    #undef last_vsr
+    #undef last_bep_count
+    #undef last_bep
 }
 
 /* EMU_VIDEO_DUMP=<file.bmp>: save the displayed frame whenever it changes */
@@ -171,22 +189,35 @@ int video_display_update(void *scc66470, void *bus)
     scc66470_t *v = (scc66470_t *)scc66470;
     bus_t *b = (bus_t *)bus;
 
-    scc66470_render(v, b->dram, (uint32_t)sizeof(b->dram), frame);
-    log_frame_changes(v, frame);
+    scc66470_t *vb = bus_get_video_slave(b);
 
-    /* Back-end processor: apply this frame's BEP CONTROL words in order */
+    /* Both VSCs share the 1 MB of DRAM (bank 1 / bank 2) and the timing */
+    scc66470_render(v,  b->dram, (uint32_t)sizeof(b->dram), frame);
+    scc66470_render(vb, b->dram, (uint32_t)sizeof(b->dram), frame_b);
+    log_frame_changes('A', v,  frame);
+    log_frame_changes('B', vb, frame_b);
+
+    /* Back-end processor: apply this frame's BEP CONTROL words in order
+     * (both VSCs drive the V.S.D. command port) */
     for (int i = 0; i < frame->bep_count; i++)
         vsd_command(&vsd, frame->bep[i]);
+    for (int i = 0; i < frame_b->bep_count; i++)
+        vsd_command(&vsd, frame_b->bep[i]);
 
     int w = frame->width, h = frame->height;
-    if (!frame->enabled) {
-        /* DE = 0: the VSC drives no picture */
+    if (!frame->enabled && !frame_b->enabled) {
+        /* DE = 0 on both: no picture */
         memset(pixels, 0, (size_t)SCC_OUT_MAX_W * SCC_OUT_MAX_H * sizeof(uint32_t));
     } else {
+        int wb = frame_b->width, hb = frame_b->height;
         for (int y = 0; y < h; y++) {
-            const uint8_t *src = &frame->pix[y * SCC_OUT_MAX_W];
+            const uint8_t *src_a = &frame->pix[y * SCC_OUT_MAX_W];
+            const uint8_t *src_b = &frame_b->pix[y * SCC_OUT_MAX_W];
             uint32_t *dst = &pixels[y * SCC_OUT_MAX_W];
-            for (int x = 0; x < w; x++) dst[x] = vsd_pixel_a(&vsd, src[x]);
+            for (int x = 0; x < w; x++) {
+                int b_on = frame_b->enabled && x < wb && y < hb;
+                dst[x] = vsd_mix(&vsd, src_a[x], frame->enabled, b_on ? src_b[x] : 0, b_on);
+            }
         }
         vsd_draw_cursor(&vsd, pixels, w, h, SCC_OUT_MAX_W);
     }

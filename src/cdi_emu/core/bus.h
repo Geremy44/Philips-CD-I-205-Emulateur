@@ -56,6 +56,7 @@ static inline uint32_t nv_off(uint32_t a)  { return a - 0x3F8000; }
 static inline uint32_t ram2_off(uint32_t a){ return a - 0x500000; }
 
 scc66470_t *bus_get_video(bus_t *b);
+scc66470_t *bus_get_video_slave(bus_t *b);
 
 struct onchip68070;
 struct onchip68070 *bus_get_onchip(bus_t *b);

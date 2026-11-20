@@ -55,6 +55,7 @@ typedef struct scc66470 {
     uint16_t reg_c8;
     uint64_t cycle_counter;
     uint32_t clut[256];
+    uint32_t ica_pointer;   /* $400 (master) or $80400 (slave dual), Table 8 */
 } scc66470_t;
 
 void scc66470_init(scc66470_t *v);
