@@ -1,151 +1,400 @@
+/* SCC66470 register and timing emulation; deliberately has no SDL dependency. */
 #include "scc66470.h"
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
-/* ---- Bit de statut CSR (lu en 0x1FFFE1, octet de poids faible) ----
-   Bit 7 = DA (Display Active). Le firmware le poll pour se synchroniser
-   sur le balayage vidéo. Il faut qu'il OSCILLE : haut en zone active,
-   bas pendant le blanking vertical (vblank). */
-#define CSR_DA_BIT        0x80
-
-
-// Timing vidéo PAL (625 lignes total)
-#define SCANLINES_TOTAL     625         // Lignes PAL complètes
-#define SCANLINES_ACTIVE    576         // Lignes visibles (avant blanking vertical)
-
-/* Constantes CD-I PAL réalistes */
-#define CYCLES_PER_LINE   1600     // ~ cycles CPU par ligne
-#define LINES_PER_FRAME   312      // PAL
-#define ACTIVE_LINES      288      // zone visible
-#define ACTIVE_CYCLES     (ACTIVE_LINES * CYCLES_PER_LINE)
-#define CYCLES_PER_FRAME  (LINES_PER_FRAME * CYCLES_PER_LINE)
-
-/* ---- Carte des registres SCC66470 (Channel B = plane principal) ---- */
-#define SCC_CSR   0x1FFFE0   /* W: control      R: status (E1: bit7=DA) */
-#define SCC_DCR   0x1FFFE2   /* Display Command Register                */
-#define SCC_VSR   0x1FFFE4   /* Video Start/Storage Register            */
-#define SCC_BCR   0x1FFFE6   /* Border Color Register                   */
-#define SCC_DCR2  0x1FFFE8   /* Display Command Register 2              */
-#define SCC_DCP   0x1FFFEA   /* Display Command Pointer                 */
-#define SCC_SWM   0x1FFFEC   /* Sync Width Modify                       */
-#define SCC_A     0x1FFFF0   /* source pointer A (DMA/copy)             */
-#define SCC_B     0x1FFFF2   /* pointer B                               */
-#define SCC_PCR   0x1FFFF4   /* Pixel Control Register                  */
-#define SCC_MASK  0x1FFFF6
-#define SCC_SHIFT 0x1FFFF8
-#define SCC_INDEX 0x1FFFFB
-#define SCC_FC    0x1FFFFC   /* Foreground Color                        */
-#define SCC_BC    0x1FFFFD   /* Background Color                        */
-#define SCC_TC    0x1FFFFE   /* Transparent Color                       */
-
-void scc66470_init(scc66470_t *v) {
-    v->csr             = 0;
-    v->csr_control     = 0;
-    v->dcr             = 0;
-    v->dcr2            = 0;
-    v->vsr             = 0;
-    v->bcr             = 0;
-    v->reg_c0 = v->reg_c2 = v->reg_c8 = 0;
-    v->scanline_counter = 0;
-}
-
-/* Appelé depuis la boucle CPU. C'EST ICI qu'on fait avancer l'horloge
-   vidéo, proportionnellement aux cycles CPU réellement écoulés. */
-void scc66470_tick(scc66470_t *v, int cpu_cycles) {
-    v->scanline_counter += cpu_cycles;
-    while (v->scanline_counter >= (long long)CYCLES_PER_FRAME)
-        v->scanline_counter -= CYCLES_PER_FRAME;
-}
-
-static uint8_t scc66470_status_byte(scc66470_t *v) {
-    long long pos = v->scanline_counter % CYCLES_PER_FRAME;
-    return (pos < ACTIVE_CYCLES) ? CSR_DA_BIT : 0x00;
-}
-
-uint8_t scc66470_read8(scc66470_t *v, uint32_t addr) {
-    switch (addr) {
-    // case 0x1FFFE1: {   /* CSR status (low byte) — bit7 = DA */
-    //     /* Filet de sécurité : si le tick CPU n'est pas branché, on fait
-    //        quand même avancer l'horloge à chaque poll pour ne jamais
-    //        bloquer la boucle DBEQ. Retire ce bloc dès que scc66470_tick()
-    //        est appelé depuis la boucle CPU. */
-    //     //if (v->scanline_counter == 0)        /* horloge figée ? */
-    //     v->scanline_counter += 1000;     /* avance fine -> DA oscille */
-    //     if (v->scanline_counter >= CYCLES_PER_FRAME)   // ⚠️ CYCLES_PER_FRAME vaut combien ?
-    //         v->scanline_counter = 0;
-
-    //     uint8_t status = scc66470_status_byte(v);
-
-    //     // fprintf(stderr, "[scc66470] CSR status -> %02X (DA=%d, sc=%lld)\n",
-    //     //         status, (status >> 7) & 1, (long long)v->scanline_counter);
-    //     return status;
-    // }
-
-    case 0x1FFFE1: {   // Registre STATUS SCC66470 (VSC)
-        // Le firmware (FUN_00180dc2) attend une transition bit7 : 1→0→1
-        // On TOGGLE bit7 à chaque lecture pour garantir les deux phases.
-        v->vsc_status_toggle ^= 1;
-        uint8_t b7 = v->vsc_status_toggle ? 0x80 : 0x00;
-        return b7;   // (ajoute d'autres bits de status si besoin)
+static int video_log_enabled(void)
+{
+    static int state = -1;
+    if (state < 0) {
+        const char *s = getenv("EMU_VIDEO_LOG");
+        state = (s && *s && strcmp(s, "0") != 0) ? 1 : 0;
     }
+    return state;
+}
 
-    case 0x1FFFE0:   /* CSR status (high byte) */
-        return 0x00;
+static void video_log(const char *op, uint32_t addr, uint16_t value)
+{
+    if (video_log_enabled())
+        fprintf(stderr, "SCC66470 %s %06X = %04X\n", op,
+                (unsigned)(addr & 0xFFFFFFu), (unsigned)value);
+}
 
-    default:
-        // fprintf(stderr, "[scc66470] read8 reg inconnu %06X\n", addr);
-        return 0x00;
+/* Power-on state: all registers cleared (datasheet: CSR and DCR bits 4-15
+   are reset to zero). The CLUT gets a grey ramp so 8-bit pixel values are
+   visible until a real palette device is emulated. */
+void scc66470_init(scc66470_t *v)
+{
+    memset(v, 0, sizeof(*v));
+    for (int i = 0; i < 256; i++)
+        v->clut[i] = 0xFF000000u | ((uint32_t)i << 16) | ((uint32_t)i << 8) | (uint32_t)i;
+}
+
+uint8_t scc66470_status(const scc66470_t *v)
+{
+    uint64_t pos = v->cycle_counter % SCC_CYCLES_PER_FRAME;
+    return (uint8_t)((pos < SCC_ACTIVE_CYCLES) ? SCC_CSR_DA : 0u);
+}
+
+static uint16_t scc_peek16(const scc66470_t *v, uint32_t addr)
+{
+    switch (addr) {
+    case SCC_C0: return v->reg_c0; case SCC_C2: return v->reg_c2; case SCC_C8: return v->reg_c8;
+    case SCC_CSR:
+        /* Return CSR with Display Active bit set (bit 7) as per hardware */
+        /* TODO: per the datasheet a read returns only the status bits
+         * (DA FG PA - - IT2 IT1 BE); the low control bits are echoed here
+         * because the boot code currently relies on this behaviour. */
+        return (uint16_t)(scc66470_status(v) | (v->csr_control & 0x007Fu));
+    case SCC_DCR: return v->dcr; case SCC_VSR: return v->vsr; case SCC_BCR: return v->bcr;
+    case SCC_DCR2: return v->dcr2; case SCC_DCP: return v->dcp; case SCC_SWM: return v->swm;
+    case SCC_A: return v->a; case SCC_B: return v->b; case SCC_PCR: return v->pcr;
+    case SCC_MASK: return v->mask; case SCC_SHIFT: return v->shift;
+    case SCC_INDEX: return v->index; case SCC_FC: return v->fc; case SCC_BC: return v->bc; case SCC_TC: return v->tc;
+    default: return 0u;
     }
 }
 
-void scc66470_write8(scc66470_t *v, uint32_t addr, uint8_t val) {
-    switch (addr) {
-    case 0x1FFFE0:                       /* CSR high byte */
-        v->csr = (uint16_t)((v->csr & 0x00FF) | (val << 8));
-        break;
-    case 0x1FFFE1:                       /* CSR low byte  */
-        v->csr = (uint16_t)((v->csr & 0xFF00) | val);
-        break;
-    default:
-        //fprintf(stderr, "[scc66470] write8 reg inconnu %06X = %02X\n", addr, val);
-        break;
+static int is_native8(uint32_t addr)
+{
+    return addr == SCC_INDEX || addr == SCC_FC || addr == SCC_BC || addr == SCC_TC;
+}
+
+
+void scc66470_tick(scc66470_t *v, int cpu_cycles)
+{
+    if (cpu_cycles > 0)
+        v->cycle_counter = (v->cycle_counter + (uint64_t)(unsigned)cpu_cycles) % SCC_CYCLES_PER_FRAME;
+}
+
+uint8_t scc66470_read8(scc66470_t *v, uint32_t addr)
+{
+    /* These four locations are physically 8-bit registers, not byte lanes
+       of a surrounding 16-bit register. */
+    if (is_native8(addr)) {
+        switch (addr) {
+        case SCC_INDEX: return v->index;
+        case SCC_FC:    return v->fc;
+        case SCC_BC:    return v->bc;
+        case SCC_TC:    return v->tc;
+        }
+    }
+    {
+        uint16_t word = scc_peek16(v, addr & ~1u);
+        return (addr & 1u) ? (uint8_t)word : (uint8_t)(word >> 8);
     }
 }
 
-uint16_t scc66470_read16(scc66470_t *v, uint32_t addr) {
-    switch (addr) {
-    case SCC_CSR:  return scc66470_status_byte(v);  /* statut, pas le control */
-    case SCC_DCR:  return v->dcr;
-    case SCC_VSR:  return v->vsr;
-    case SCC_BCR:  return v->bcr;
-    case SCC_DCR2: return v->dcr2;
-    default:
-        //fprintf(stderr, "[scc66470] read16 reg inconnu %06X\n", addr);
-        return 0x0000;
-    }
+uint16_t scc66470_read16(scc66470_t *v, uint32_t addr)
+{
+    return scc_peek16(v, addr);
 }
 
-void scc66470_write16(scc66470_t *v, uint32_t addr, uint16_t val) {
+void scc66470_write16(scc66470_t *v, uint32_t addr, uint16_t val)
+{
+    video_log("W16", addr, val);
     switch (addr) {
-    case SCC_CSR:    /* CSR control register */
+    case SCC_C0: v->reg_c0 = val; break; case SCC_C2: v->reg_c2 = val; break; case SCC_C8: v->reg_c8 = val; break;
+    case SCC_CSR:
+        /* Control register (write): DI1 DI2 - - - EW DD1 DD2 DM1 DM2 TD CG DD ED ST BE.
+         * Kept whole: DM1/DM2 (FAST/SLOW timing) and ST are needed for display. */
         v->csr_control = val;
-        // fprintf(stderr, "[scc66470] CSR ctrl <= %04X "
-        //         "(DM=%d TD=%d ED=%d BE=%d)\n",
-        //         val, (val >> 6) & 3, (val >> 5) & 1, (val >> 2) & 1, val & 1);
+        break;
+    case SCC_DCR: v->dcr = val; break; case SCC_VSR: v->vsr = val; break;
+    case SCC_BCR: v->bcr = val; break; case SCC_DCR2: v->dcr2 = val; break; case SCC_DCP: v->dcp = val; break;
+    case SCC_SWM: v->swm = val; break; case SCC_A: v->a = val; break; case SCC_B: v->b = val; break;
+    case SCC_PCR: v->pcr = val; break; case SCC_MASK: v->mask = val; break; case SCC_SHIFT: v->shift = val; break;
+    case SCC_INDEX: v->index = (uint8_t)val; break; case SCC_FC: v->fc = (uint8_t)val; break;
+    case SCC_BC: v->bc = (uint8_t)val; break; case SCC_TC: v->tc = (uint8_t)val; break;
+    default: break;
+    }
+}
+
+void scc66470_write8(scc66470_t *v, uint32_t addr, uint8_t val)
+{
+    if (is_native8(addr)) {
+        switch (addr) { case SCC_INDEX: v->index = val; break; case SCC_FC: v->fc = val; break;
+        case SCC_BC: v->bc = val; break; case SCC_TC: v->tc = val; break; }
+        video_log("W8", addr, val);
         return;
+    }
+    /* The bus is big-endian: even address is the high byte, odd is the low byte. */
+    uint32_t base = addr & ~1u;
+    uint16_t old = scc_peek16(v, base);
+    uint16_t word = (addr & 1u) ? (uint16_t)((old & 0xFF00u) | val)
+                               : (uint16_t)(((uint16_t)val << 8) | (old & 0x00FFu));
+    scc66470_write16(v, base, word);
+}
 
-    case SCC_DCR:  v->dcr  = val; return;   /* Display Command Register   */
-    case SCC_VSR:  v->vsr  = val; return;   /* Video Start Register       */
-    case SCC_BCR:  v->bcr  = val; return;   /* Border Color Register (E6) */
-    case SCC_DCR2: v->dcr2 = val; return;   /* Display Command Register 2 */
+void scc66470_set_clut_entry(scc66470_t *v, int index, uint16_t rgb555)
+{
+    if (index >= 0 && index < 256) {
+        uint8_t r = (uint8_t)(((rgb555 >> 11) & 31u) << 3);
+        uint8_t g = (uint8_t)(((rgb555 >> 6) & 31u) << 3);
+        uint8_t b = (uint8_t)(((rgb555 >> 1) & 31u) << 3);
+        v->clut[index] = 0xFF000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+    }
+}
 
-    /* --- Channel A (second plane), bloc miroir à 0x1FFFC0 --- */
-    case 0x1FFFC0: v->reg_c0 = val; return; /* CSR ctrl A   */
-    case 0x1FFFC2: v->reg_c2 = val; return; /* DCR A        */
-    case 0x1FFFC8: v->reg_c8 = val; return; /* DCR2 A       */
+/* ======================================================================
+ * Display generation
+ *
+ * Implements the display path of the SCC66470/03 datasheet:
+ *   - DCR:  DE (15) CF1 CF2 FD SM SS LS CM (8) FG DF IC DC A19..A16
+ *   - DCR2: OM1 (14) OM2 ID MF1 MF2 FT1 FT2 (8) .... A19..A16 (DCA ptr)
+ *   - CSR (control): DM1 (7) DM2 (6) -> FAST/SLOW timing, ST (1)
+ *   - ICA: control program fetched from $400 at each vertical retrace
+ *   - DCA: per-line control program (interleaved or independent)
+ *   - file types: bit map, run-length, mosaic; 4 or 8 bits per pixel
+ * ====================================================================== */
 
-    default:
-        // fprintf(stderr, "[scc66470] write16 reg inconnu %06X = %04X\n",
-        //         addr, val);
+#define VA_MASK        0xFFFFFu   /* the VSC addresses 1 MB of DRAM */
+#define ICA_POINTER    0x00400u   /* 256K DRAM, bank 1 enabled (Table 8) */
+#define ICA_MAX_INSNS  2048       /* safety bound on one ICA program */
+
+/* Working display state, modified by ICA/DCA instructions */
+typedef struct {
+    uint32_t vac;      /* video address counter (VSR + A19..A16) */
+    uint32_t dcp;      /* DCA pointer */
+    uint8_t  bcr;      /* border colour (8-bit pixel value) */
+    int ss, cm, om1, om2, mf1, mf2, ft1, ft2;
+    int dcp_reloaded;  /* a RELOAD DCP happened during this DCA */
+    scc_frame_t *out;
+} disp_state_t;
+
+typedef struct {
+    const uint8_t *mem;
+    uint32_t       mask;
+} vram_t;
+
+static inline uint8_t vr8(const vram_t *m, uint32_t a) { return m->mem[a & m->mask]; }
+static inline uint32_t vr32(const vram_t *m, uint32_t a)
+{
+    return ((uint32_t)vr8(m, a) << 24) | ((uint32_t)vr8(m, a + 1) << 16) |
+           ((uint32_t)vr8(m, a + 2) << 8) | vr8(m, a + 3);
+}
+
+enum { CTX_ICA, CTX_DCA_INDEP, CTX_DCA_INTERLEAVED };
+
+/*
+ * Execute an ICA/DCA program (Table 11). Returns the number of
+ * instructions executed. In the ICA and in an interleaved DCA, a RELOAD
+ * VSR also redirects the instruction fetches (indirect addressing).
+ */
+static int run_control(disp_state_t *s, const vram_t *m, uint32_t ptr,
+                       int max_insns, int ctx)
+{
+    int n;
+    for (n = 0; n < max_insns; n++) {
+        uint32_t w = vr32(m, ptr);
+        ptr = (ptr + 4) & VA_MASK;
+
+        if (w & 0x80000000u) {                     /* BEP CONTROL */
+            if (s->out->bep_count < SCC_BEP_MAX)
+                s->out->bep[s->out->bep_count++] = w;
+            continue;
+        }
+        switch (w >> 28) {
+        case 0x0: return n + 1;                    /* STOP */
+        case 0x1: break;                           /* NOP */
+        case 0x2:                                  /* RELOAD DCP */
+        case 0x3:                                  /* RELOAD DCP and STOP */
+            s->dcp = w & 0xFFFFCu;
+            s->dcp_reloaded = 1;
+            if ((w >> 28) == 0x3) return n + 1;
+            if (ctx == CTX_DCA_INDEP) ptr = s->dcp;
+            break;
+        case 0x4:                                  /* RELOAD VSR */
+        case 0x5:                                  /* RELOAD VSR and STOP */
+            s->vac = w & VA_MASK;
+            if ((w >> 28) == 0x5) return n + 1;
+            if (ctx != CTX_DCA_INDEP) ptr = s->vac;
+            break;
+        case 0x6: break;                           /* INTERRUPT (IT1): no IRQ model yet */
+        case 0x7:                                  /* RELOAD BORDER [+ DISPLAY] */
+            s->bcr = (uint8_t)(w >> 16);
+            if (w & 0x08000000u) {
+                s->ss  = (w >> 10) & 1;  s->cm  = (w >> 8) & 1;
+                s->om1 = (w >> 6) & 1;   s->om2 = (w >> 5) & 1;
+                s->mf1 = (w >> 3) & 1;   s->mf2 = (w >> 2) & 1;
+                s->ft1 = (w >> 1) & 1;   s->ft2 = w & 1;
+            }
+            break;
+        }
+    }
+    return n;
+}
+
+/* Map a 4-bit pixel to the V(7:0) port according to the output mode (Table 12) */
+static inline uint8_t out4(const disp_state_t *s, uint8_t nib)
+{
+    nib &= 0x0F;
+    if (!s->om1 && s->om2) return nib;            /* mode E: V3..V0 */
+    if (s->om1 && !s->om2)                        /* mode F: V7 V6 V4 V3 V1 V0 */
+        return (uint8_t)(((nib & 8) ? 0xC0 : 0) | ((nib & 4) ? 0x18 : 0) |
+                         ((nib & 2) ? 0x02 : 0) | ((nib & 1) ? 0x01 : 0));
+    return (uint8_t)(nib << 4);                   /* mode D (default): V7..V4 */
+}
+
+/* Horizontal full/reduced resolutions in 4-bit pixels (Table 4, CM = 1) */
+static void h_res(int cf, int st, int *full, int *reduced)
+{
+    static const int tab_red[4]  = { 448, 512, 640, 640 };
+    static const int tab_full[4] = { 512, 640, 720, 768 };
+    *reduced = tab_red[cf];
+    *full    = tab_full[cf];
+    if (cf == 3 && st) *full = 720;               /* ST masks 24 pixels at 30 MHz */
+}
+
+/* Vertical full/reduced line counts (Table 5) */
+static void v_res(int fd, int st, int *full, int *reduced)
+{
+    if (fd) { *full = 240; *reduced = 210; return; }      /* 60 Hz */
+    *full    = st ? 240 : 280;
+    *reduced = st ? 210 : 250;
+}
+
+/*
+ * Render one display line of npix source pixels starting at the video
+ * address counter, writing unit output pixels per 4-bit pixel.
+ */
+static void render_line(disp_state_t *s, const vram_t *m, uint8_t *dst,
+                        int npix, int unit)
+{
+    int mosaic = 1;
+    if (s->ft1 && s->ft2) mosaic = 2 << ((s->mf1 << 1) | s->mf2);
+    int pw = s->cm ? unit : unit * 2;             /* output pixels per source pixel */
+    int x = 0;
+
+    if (s->ft1 && !s->ft2) {
+        /* ---- Run-length file (Figs. 21-24) ---- */
+        while (x < npix) {
+            uint8_t b = vr8(m, s->vac); s->vac = (s->vac + 1) & VA_MASK;
+            int count = 1;
+            if (b & 0x80) {                       /* type B: colour + N */
+                count = vr8(m, s->vac); s->vac = (s->vac + 1) & VA_MASK;
+                if (count == 0) count = npix;     /* N = 0: until end of line */
+            }
+            for (int k = 0; k < count && x < npix; k++) {
+                if (s->cm) {                       /* 4 bpp: two 3-bit colours */
+                    uint8_t p[2] = { (uint8_t)((b >> 4) & 7), (uint8_t)(b & 7) };
+                    for (int h = 0; h < 2 && x < npix; h++, x++)
+                        for (int u = 0; u < pw; u++) dst[x * pw + u] = out4(s, p[h]);
+                } else {                           /* 8 bpp: 7-bit colour */
+                    for (int u = 0; u < pw; u++) dst[x * pw + u] = (uint8_t)(b & 0x7F);
+                    x++;
+                }
+            }
+        }
         return;
+    }
+
+    /* ---- Bit map / mosaic file (Figs. 19, 20, 25) ---- */
+    while (x < npix) {
+        uint8_t b = vr8(m, s->vac); s->vac = (s->vac + 1) & VA_MASK;
+        if (s->cm) {
+            uint8_t p[2] = { out4(s, b >> 4), out4(s, b) };
+            for (int h = 0; h < 2; h++)
+                for (int r = 0; r < mosaic && x < npix; r++, x++)
+                    for (int u = 0; u < pw; u++) dst[x * pw + u] = p[h];
+        } else {
+            for (int r = 0; r < mosaic && x < npix; r++, x++)
+                for (int u = 0; u < pw; u++) dst[x * pw + u] = b;
+        }
+    }
+}
+
+void scc66470_render(const scc66470_t *v, const uint8_t *dram, uint32_t dram_size,
+                     scc_frame_t *out)
+{
+    vram_t m = { dram, (dram_size >= 0x100000u) ? VA_MASK : (dram_size - 1u) };
+    disp_state_t s;
+    memset(&s, 0, sizeof(s));
+    s.out = out;
+    out->bep_count = 0;
+    out->ica_count = 0;
+
+    uint16_t dcr = v->dcr, dcr2 = v->dcr2, csr = v->csr_control;
+    out->enabled = (dcr >> 15) & 1;
+
+    /* Initial state from the registers */
+    s.vac = (((uint32_t)dcr & 0xFu) << 16) | v->vsr;
+    s.dcp = ((((uint32_t)dcr2 & 0xFu) << 16) | v->dcp) & 0xFFFFCu;
+    s.bcr = (uint8_t)v->bcr;
+    s.ss  = (dcr >> 10) & 1;  s.cm  = (dcr >> 8) & 1;
+    s.om1 = (dcr2 >> 14) & 1; s.om2 = (dcr2 >> 13) & 1;
+    s.mf1 = (dcr2 >> 11) & 1; s.mf2 = (dcr2 >> 10) & 1;
+    s.ft1 = (dcr2 >> 9) & 1;  s.ft2 = (dcr2 >> 8) & 1;
+
+    int ic = (dcr >> 5) & 1, dc = (dcr >> 4) & 1;
+    int ls = (dcr >> 9) & 1;
+    int id = (dcr2 >> 12) & 1;
+    int cf = (dcr >> 13) & 3;
+    int fd = (dcr >> 12) & 1;
+    int st = (csr >> 1) & 1;
+    int dm = (csr >> 6) & 3;                       /* DM1 DM2 */
+    int slow = (dm == 0 || dm == 3);               /* NORMAL / DUAL PORT */
+
+    /* ICA: vertical retrace control program */
+    if (ic || dc)
+        out->ica_count = run_control(&s, &m, ICA_POINTER, ICA_MAX_INSNS, CTX_ICA);
+    out->vsr_start = s.vac;
+
+    /* Geometry (uses SS after the ICA, which may have changed it) */
+    int hfull, hred, vfull, vred;
+    h_res(cf, st, &hfull, &hred);
+    v_res(fd, st, &vfull, &vred);
+    out->width  = hfull;
+    out->height = vfull;
+
+    int act_w = s.ss ? hfull : hred;
+    int act_h = s.ss ? vfull : vred;
+    int left  = (hfull - act_w) / 2;
+    int top   = (vfull - act_h) / 2;
+    int unit  = slow ? 2 : 1;                      /* SLOW halves the resolution */
+
+    /* DCA size (Tables 9/10): 64 bytes with ICA, 16 bytes in reduced mode */
+    int dca_insns = dc ? (ic ? 16 : 4) : 0;
+    if (slow) dca_insns /= 2;
+
+    /* Fill with the border colour */
+    for (int y = 0; y < vfull; y++)
+        memset(&out->pix[y * SCC_OUT_MAX_W], s.bcr, (size_t)hfull);
+
+    uint32_t line_start = s.vac;
+    for (int y = 0; y < act_h; y++) {
+        uint8_t *row = &out->pix[(top + y) * SCC_OUT_MAX_W];
+
+        /* Independent DCA: executed before the line, at DCP */
+        if (dca_insns && id) {
+            uint32_t this_dcp = s.dcp;
+            uint32_t before   = s.vac;
+            s.dcp_reloaded = 0;
+            run_control(&s, &m, this_dcp, dca_insns, CTX_DCA_INDEP);
+            if (!s.dcp_reloaded) s.dcp = (this_dcp + (uint32_t)dca_insns * 4u) & VA_MASK;
+            if (s.vac != before) line_start = s.vac;
+        }
+
+        /* Border colour may have been changed by the DCA */
+        memset(row, s.bcr, (size_t)hfull);
+
+        int pw   = s.cm ? unit : unit * 2;
+        int npix = act_w / pw;
+        s.vac = line_start;
+        render_line(&s, &m, row + left, npix, unit);
+
+        uint32_t next = ls ? ((line_start + 512u) & VA_MASK) : s.vac;
+
+        /* Interleaved DCA: stored after the line pixels (Fig. 10) */
+        if (dca_insns && !id) {
+            uint32_t dca_addr = ls ? ((line_start & ~0x1FFu) | (dca_insns == 16 ? 0x1C0u : 0x1F0u))
+                                   : s.vac;
+            uint32_t before = s.vac;
+            run_control(&s, &m, dca_addr, dca_insns, CTX_DCA_INTERLEAVED);
+            if (s.vac != before) next = s.vac;    /* RELOAD VSR in the DCA */
+            else if (!ls) next = (dca_addr + (uint32_t)dca_insns * 4u) & VA_MASK;
+        }
+        line_start = next;
     }
 }

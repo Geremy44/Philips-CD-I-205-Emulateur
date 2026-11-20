@@ -1,3 +1,15 @@
+/*
+ * uart_console.c - SDL2-based UART terminal window
+ *
+ * Implements an 80x25 character terminal using SDL2 and SDL_ttf.
+ * Characters written to the emulated UART TX register are rendered
+ * here, and keyboard input is captured into a ring buffer that the
+ * UART RX register reads from.
+ *
+ * Supports basic ANSI escape sequences for cursor movement, screen
+ * clearing, and color (used by the CD-i firmware console output).
+ */
+
 #include "uart_console.h"
 
 #include <SDL2/SDL.h>
@@ -6,9 +18,7 @@
 #include <stdio.h>
 #include <ctype.h>
 
-/* ================================================================
- * Configuration
- * ================================================================ */
+/* ===== Terminal configuration ===== */
 #define UART_COLS      80
 #define UART_ROWS      25
 #define CHAR_W         9
@@ -16,67 +26,62 @@
 #define MAX_ESC_PARAMS 8
 #define RX_BUF_SIZE    256
 
-/* Chemin de la police - adaptez selon votre système.
- * Linux : /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf
- * Vous pouvez aussi embarquer une police .ttf dans le repo. */
+/*
+ * Font search paths. The terminal tries each path in order and uses
+ * the first font that loads successfully.
+ */
 #ifndef UART_FONT_PATH
 #define UART_FONT_PATH "DejaVuSansMono.ttf"
 #endif
 
-/* ================================================================
- * Etat interne SDL
- * ================================================================ */
+/* ===== SDL2 state ===== */
 static SDL_Window   *win  = NULL;
 static SDL_Renderer *ren  = NULL;
 static TTF_Font     *font = NULL;
 static int initialized = 0;
 
-/* ================================================================
- * Grille d'affichage (texte + couleurs)
- * ================================================================ */
+/* ===== Text screen grid (character + per-cell colors) ===== */
 static char      screen[UART_ROWS][UART_COLS + 1];
 static SDL_Color fg_grid[UART_ROWS][UART_COLS];
 static SDL_Color bg_grid[UART_ROWS][UART_COLS];
 static int cursor_x = 0, cursor_y = 0;
 
+/* Default and current colors */
 static const SDL_Color default_fg = {200, 200, 200, 255};
 static const SDL_Color default_bg = {0,   0,   0,   255};
 static SDL_Color current_fg;
 static SDL_Color current_bg;
 static int reverse_mode = 0;
 
+/* ANSI standard 8-color palette */
 static const SDL_Color ansi_colors[8] = {
-    {0,   0,   0,   255}, /* 0 black   */
-    {205, 0,   0,   255}, /* 1 red     */
-    {0,   205, 0,   255}, /* 2 green   */
-    {205, 205, 0,   255}, /* 3 yellow  */
-    {0,   0,   238, 255}, /* 4 blue    */
-    {205, 0,   205, 255}, /* 5 magenta */
-    {0,   205, 205, 255}, /* 6 cyan    */
-    {229, 229, 229, 255}  /* 7 white   */
+    {0,   0,   0,   255}, /* 0: black   */
+    {205, 0,   0,   255}, /* 1: red     */
+    {0,   205, 0,   255}, /* 2: green   */
+    {205, 205, 0,   255}, /* 3: yellow  */
+    {0,   0,   238, 255}, /* 4: blue    */
+    {205, 0,   205, 255}, /* 5: magenta */
+    {0,   205, 205, 255}, /* 6: cyan    */
+    {229, 229, 229, 255}  /* 7: white   */
 };
 
-/* ================================================================
- * Parseur ANSI - état
- * ================================================================ */
+/* ===== ANSI escape sequence parser state ===== */
 typedef enum { ST_NORMAL, ST_ESC, ST_CSI } parser_state_t;
 static parser_state_t state = ST_NORMAL;
 static int esc_params[MAX_ESC_PARAMS];
 static int esc_param_count = 0;
 static int esc_cur_param = 0;
 
-/* ================================================================
- * Buffer RX (clavier -> firmware)
- * ================================================================ */
+/* ===== RX ring buffer (keyboard input for the emulated UART) ===== */
 static uint8_t rx_buf[RX_BUF_SIZE];
 static int rx_head = 0, rx_tail = 0;
 
-
+/* Try opening a TrueType font from a list of candidate paths */
 static TTF_Font *try_open_font(void) {
     const char *paths[] = {
         UART_FONT_PATH,
         "DejaVuSansMono.ttf",
-        "C:/Windows/Fonts/consola.ttf",   /* Consolas - toujours présent */
+        "C:/Windows/Fonts/consola.ttf",   /* Consolas */
         "C:/Windows/Fonts/cour.ttf",      /* Courier New */
         "/ucrt64/share/fonts/TTF/DejaVuSansMono.ttf",
         NULL
@@ -84,13 +89,14 @@ static TTF_Font *try_open_font(void) {
     for (int i = 0; paths[i]; i++) {
         TTF_Font *f = TTF_OpenFont(paths[i], 14);
         if (f) {
-            fprintf(stderr, "[uart_console] Police chargee: %s\n", paths[i]);
+            fprintf(stderr, "[uart_console] Font loaded: %s\n", paths[i]);
             return f;
         }
     }
     return NULL;
 }
 
+/* Push a character into the RX ring buffer */
 static void rx_push(uint8_t c) {
     int next = (rx_head + 1) % RX_BUF_SIZE;
     if (next != rx_tail) {
@@ -99,10 +105,12 @@ static void rx_push(uint8_t c) {
     }
 }
 
+/* Check if keyboard input is available in the RX buffer */
 int uart_console_has_input(void) {
     return rx_head != rx_tail;
 }
 
+/* Retrieve the next character from the RX buffer */
 uint8_t uart_console_get_input(void) {
     uint8_t c = 0;
     if (rx_head != rx_tail) {
@@ -112,9 +120,9 @@ uint8_t uart_console_get_input(void) {
     return c;
 }
 
-/* ================================================================
- * Gestion de l'écran texte
- * ================================================================ */
+/* ===== Screen manipulation ===== */
+
+/* Clear the entire screen to default colors */
 static void clear_screen(void) {
     memset(screen, ' ', sizeof(screen));
     for (int y = 0; y < UART_ROWS; y++) {
@@ -128,6 +136,7 @@ static void clear_screen(void) {
     cursor_y = 0;
 }
 
+/* Scroll the screen up by one line (bottom line cleared) */
 static void scroll_up(void) {
     memmove(screen[0], screen[1], (UART_ROWS - 1) * (UART_COLS + 1));
     memmove(fg_grid[0], fg_grid[1], (UART_ROWS - 1) * UART_COLS * sizeof(SDL_Color));
@@ -141,6 +150,7 @@ static void scroll_up(void) {
     }
 }
 
+/* Clear from cursor position to end of line */
 static void clear_line_from_cursor(void) {
     for (int x = cursor_x; x < UART_COLS; x++) {
         screen[cursor_y][x] = ' ';
@@ -149,6 +159,7 @@ static void clear_line_from_cursor(void) {
     }
 }
 
+/* Move cursor to next line, scrolling if needed */
 static void newline(void) {
     cursor_x = 0;
     cursor_y++;
@@ -158,6 +169,7 @@ static void newline(void) {
     }
 }
 
+/* Place a character at the cursor position and advance cursor */
 static void putchar_screen(char c) {
     if (cursor_x >= UART_COLS) newline();
 
@@ -172,9 +184,13 @@ static void putchar_screen(char c) {
     cursor_x++;
 }
 
-/* ================================================================
- * Traitement des séquences CSI (ESC [ ... lettre)
- * ================================================================ */
+/* ===== ANSI CSI sequence handler ===== */
+
+/*
+ * Handle a completed CSI (ESC [ ... <final>) escape sequence.
+ * Supports cursor positioning, screen/line clearing, cursor movement,
+ * and SGR (color/attribute) control.
+ */
 static void handle_csi(char final) {
     if (esc_param_count < MAX_ESC_PARAMS) {
         esc_params[esc_param_count++] = esc_cur_param;
@@ -182,7 +198,7 @@ static void handle_csi(char final) {
 
     switch (final) {
         case 'H':
-        case 'f': {
+        case 'f': {  /* Set cursor position (row;col, 1-based) */
             int row = (esc_param_count >= 1 && esc_params[0] > 0) ? esc_params[0] : 1;
             int col = (esc_param_count >= 2 && esc_params[1] > 0) ? esc_params[1] : 1;
             cursor_y = row - 1;
@@ -194,37 +210,37 @@ static void handle_csi(char final) {
             break;
         }
 
-        case 'J':
+        case 'J':  /* Erase display */
             if (esc_param_count == 0 || esc_params[0] == 2 || esc_params[0] == 0) {
                 clear_screen();
             }
             break;
 
-        case 'K':
+        case 'K':  /* Erase line from cursor */
             clear_line_from_cursor();
             break;
 
-        case 'A':
+        case 'A':  /* Cursor up */
             cursor_y -= (esc_param_count && esc_params[0] > 0) ? esc_params[0] : 1;
             if (cursor_y < 0) cursor_y = 0;
             break;
 
-        case 'B':
+        case 'B':  /* Cursor down */
             cursor_y += (esc_param_count && esc_params[0] > 0) ? esc_params[0] : 1;
             if (cursor_y >= UART_ROWS) cursor_y = UART_ROWS - 1;
             break;
 
-        case 'C':
+        case 'C':  /* Cursor right */
             cursor_x += (esc_param_count && esc_params[0] > 0) ? esc_params[0] : 1;
             if (cursor_x >= UART_COLS) cursor_x = UART_COLS - 1;
             break;
 
-        case 'D':
+        case 'D':  /* Cursor left */
             cursor_x -= (esc_param_count && esc_params[0] > 0) ? esc_params[0] : 1;
             if (cursor_x < 0) cursor_x = 0;
             break;
 
-        case 'm':
+        case 'm':  /* SGR - Set graphic rendition (colors/attributes) */
             for (int i = 0; i < esc_param_count; i++) {
                 int p = esc_params[i];
                 if (p == 0) {
@@ -252,9 +268,13 @@ static void handle_csi(char final) {
     }
 }
 
-/* ================================================================
- * API publique : réception d'un caractère depuis uart_write8()
- * ================================================================ */
+/* ===== Public API ===== */
+
+/*
+ * Process a character from the emulated UART TX output.
+ * Handles control characters (CR, LF, BS, TAB) and ANSI escape
+ * sequences (ESC [ ...).
+ */
 void uart_console_putchar(char c) {
     switch (state) {
     case ST_NORMAL:
@@ -300,9 +320,11 @@ void uart_console_putchar(char c) {
     }
 }
 
-/* ================================================================
- * Initialisation SDL2
- * ================================================================ */
+/*
+ * Initialize the SDL2 terminal window.
+ * Creates the window, renderer, and loads a TrueType font.
+ * Call once at emulator startup.
+ */
 void uart_console_init(void) {
     if (initialized) return;
 
@@ -329,11 +351,7 @@ void uart_console_init(void) {
         return;
     }
 
-    // ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    // if (!ren) {
-    //     ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
-    // }
-
+    /* Try accelerated renderer, fall back to software */
     ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
     if (!ren) {
         ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
@@ -341,7 +359,7 @@ void uart_console_init(void) {
 
     font = try_open_font();
     if (!font) {
-        fprintf(stderr, "[uart_console] AUCUNE police trouvee: %s\n", TTF_GetError());
+        fprintf(stderr, "[uart_console] No font found: %s\n", TTF_GetError());
     }
 
     current_fg = default_fg;
@@ -354,20 +372,41 @@ void uart_console_init(void) {
     initialized = 1;
 }
 
-/* ================================================================
- * Boucle de mise à jour : rendu + input clavier
- * Retourne 0 si fermeture demandée, 1 sinon.
- * ================================================================ */
+/*
+ * Process SDL events and render the terminal.
+ * Captures keyboard input into the RX buffer and renders the
+ * current screen state with the TrueType font.
+ * Returns 0 if the user closed the window, 1 otherwise.
+ */
 int uart_console_update(void) {
     if (!initialized) return 1;
 
+    /* --- Handle SDL events ---
+     * Events for all SDL2 windows are processed here. Window close
+     * events (SDL_WINDOWEVENT_CLOSE) are dispatched by window ID:
+     * the UART window close stops the emulator, the video display
+     * window close sets a flag that video_display_update checks. */
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         switch (e.type) {
         case SDL_QUIT:
-            uart_console_close();
-            exit(0);        /* sortie immediate si la boucle principale l'ignore */
             return 0;
+
+        case SDL_WINDOWEVENT:
+            if (e.window.event == SDL_WINDOWEVENT_CLOSE) {
+                /* Check which window was closed by its ID */
+                extern int g_video_window_closed;
+                extern uint32_t video_display_get_window_id(void);
+                if (e.window.windowID == SDL_GetWindowID(win)) {
+                    /* UART terminal window closed - stop emulator */
+                    return 0;
+                }
+                if (e.window.windowID == video_display_get_window_id()) {
+                    /* Video display window closed - set flag */
+                    g_video_window_closed = 1;
+                }
+            }
+            break;
 
         case SDL_TEXTINPUT:
             for (int i = 0; e.text.text[i] != '\0'; i++) {
@@ -392,11 +431,11 @@ int uart_console_update(void) {
                     rx_push('\x1b');
                     break;
                 default:
-                    /* Raccourcis Ctrl+lettre -> code de contrôle ASCII */
+                    /* Ctrl+letter -> ASCII control code (^A=1 .. ^Z=26) */
                     if (mod & KMOD_CTRL) {
                         SDL_Keycode k = e.key.keysym.sym;
                         if (k >= SDLK_a && k <= SDLK_z) {
-                            rx_push((uint8_t)(k - SDLK_a + 1)); /* ^A=1 .. ^Z=26 */
+                            rx_push((uint8_t)(k - SDLK_a + 1));
                         }
                     }
                     break;
@@ -411,10 +450,13 @@ int uart_console_update(void) {
 
     if (!ren) return 1;
 
+    /* --- Render the terminal --- */
+
+    /* Clear background */
     SDL_SetRenderDrawColor(ren, default_bg.r, default_bg.g, default_bg.b, 255);
     SDL_RenderClear(ren);
 
-    /* Fonds de cellule non-défaut */
+    /* Draw non-default cell backgrounds */
     for (int y = 0; y < UART_ROWS; y++) {
         for (int x = 0; x < UART_COLS; x++) {
             SDL_Color bg = bg_grid[y][x];
@@ -426,15 +468,9 @@ int uart_console_update(void) {
         }
     }
 
-    /* Texte */
+    /* Render text characters (one at a time for per-cell color support) */
     if (font) {
         for (int y = 0; y < UART_ROWS; y++) {
-            /* Rendu ligne par ligne pour limiter le nombre d'appels TTF */
-            char line[UART_COLS + 1];
-            memcpy(line, screen[y], UART_COLS + 1);
-
-            /* Rendu caractère par caractère pour supporter les couleurs
-             * multiples par ligne (moins rapide mais simple et robuste) */
             for (int x = 0; x < UART_COLS; x++) {
                 char ch = screen[y][x];
                 if (ch == ' ' || ch == '\0') continue;
@@ -451,7 +487,7 @@ int uart_console_update(void) {
         }
     }
 
-    /* Curseur clignotant */
+    /* Draw blinking cursor */
     static int blink_counter = 0;
     blink_counter = (blink_counter + 1) % 60;
     if (blink_counter < 30) {
@@ -462,17 +498,4 @@ int uart_console_update(void) {
 
     SDL_RenderPresent(ren);
     return 1;
-}
-
-/* ================================================================
- * Fermeture propre
- * ================================================================ */
-void uart_console_close(void) {
-    if (font) { TTF_CloseFont(font); font = NULL; }
-    if (ren)  { SDL_DestroyRenderer(ren); ren = NULL; }
-    if (win)  { SDL_DestroyWindow(win); win = NULL; }
-    if (TTF_WasInit()) TTF_Quit();
-    initialized = 0;
-    /* Ne fait pas SDL_Quit() global si votre émulateur gère déjà
-     * une fenêtre vidéo principale avec SDL_INIT_VIDEO partagé. */
 }
