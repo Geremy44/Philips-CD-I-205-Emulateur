@@ -29,6 +29,8 @@ tools/modules_fmv/
 # copies de dossiers .git (contiennent tout l'historique, ROM comprises)
 .git.backup/
 *.bundle
+# archives de sauvegarde du code (contiennent la ROM)
+src/cdi_emu*.zip
 
 # 🛠️ Build de l'émulateur
 # -----------------------------------------------------------------------------
