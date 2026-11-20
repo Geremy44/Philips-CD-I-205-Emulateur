@@ -4,38 +4,72 @@
 
 # ⛔ ROMs & images CD-i — COPYRIGHT Philips — NE JAMAIS COMMITTER
 # -----------------------------------------------------------------------------
-*.bin          # dumps ROM / firmware
-*.rom          # fichiers ROM
-*.iso          # images CD-ROM ISO9660
-*.img          # images disque
-ROMS/          # dossier local contenant les dumps
-roms/          # variants minuscules
-Firmware/      # dossier firmware
-firmware/      #
+# NB : git ne gère pas les commentaires en fin de ligne, chaque commentaire
+# doit être sur sa propre ligne.
+# dumps ROM / firmware / modules extraits (toutes casses)
+*.[bB][iI][nN]
+*.[rR][oO][mM]
+*.[hH][eE][xX]
+*.os9
+# images CD-ROM / disque
+*.[iI][sS][oO]
+*.[iI][mM][gG]
+# dossiers contenant des dumps
+ROM/
+ROMs/
+ROMS/
+roms/
+Firmware/
+firmware/
+# modules OS-9 extraits de la ROM et projets de désassemblage (contiennent la ROM)
+tools/modules/
+tools/modules_fmv/
+*.gpr
+*.rep/
+
+# 🛠️ Build de l'émulateur
+# -----------------------------------------------------------------------------
+*.o
+*.exe
+src/cdi_emu/bin/
+# NVRAM sauvegardée par l'émulateur (données utilisateur)
+nvram.bin
 
 # ⛔ Fichiers temporaires système
 # -----------------------------------------------------------------------------
-.DS_Store          # macOS
-Thumbs.db          # Windows
-*~                 # backup Emacs/vim
-*.swp              # vim swap
-*.swo              # vim
-*.bak              # backups
+# macOS
+.DS_Store
+# Windows
+Thumbs.db
+# backup Emacs/vim
+*~
+# vim swap
+*.swp
+# vim
+*.swo
+# backups
+*.bak
 
 # 🐍 Python
 # -----------------------------------------------------------------------------
-__pycache__/           # cache bytecode
-*.py[cod]              # bytecode compilé
+# cache bytecode
+__pycache__/
+# bytecode compilé
+*.py[cod]
 *.pyc
 *.pyo
 *.pyd
-.venv/                 # environnement virtuel
+# environnement virtuel
+.venv/
 venv/
 ENV/
 env/
-*.egg-info/            # setuptools
-dist/                  # build wheels
-build/                 # build artifacts
+# setuptools
+*.egg-info/
+# build wheels
+dist/
+# build artifacts
+build/
 .pip-wheel-metadata
 
 # 📦 Node (si applicable plus tard)
