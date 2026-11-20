@@ -39,6 +39,10 @@ src/cdi_emu*.zip
 src/cdi_emu/bin/
 # NVRAM sauvegardée par l'émulateur (données utilisateur)
 nvram.bin
+nvram.rtc
+# slots de sauvegarde (F5 / F9) et fichiers temporaires d'écriture
+saves/
+*.tmp
 
 # ⛔ Fichiers temporaires système
 # -----------------------------------------------------------------------------

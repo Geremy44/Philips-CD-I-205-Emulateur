@@ -13,6 +13,8 @@
 #include "./SLAVE/slave_backend.h"
 #include "./CPU/uart.h"
 #include "./GPU/scc66470.h"
+#include "rtc_m48t08.h"
+#include <time.h>
 
 /*
  * Main bus structure
@@ -26,6 +28,10 @@ typedef struct bus {
     uart_t  uart;             /* UART peripheral state */
     int trace;                /* Trace flag (unused in current code) */
     slave_backend_t *slave;   /* Slave co-processor backend */
+
+    rtc_m48t08_t rtc;         /* M48T08 clock at $3FBFF0-$3FBFFE */
+    int     nvram_dirty;      /* NVRAM changed since the last save */
+    time_t  nvram_last_write; /* host time of the last NVRAM change */
 } bus_t;
 
 /* Lifecycle */
@@ -49,13 +55,24 @@ void bus_write32(bus_t *b, uint32_t addr, uint32_t v);
 /* Address range helpers used by bus_read8/bus_write8 */
 static inline int is_dram(uint32_t a)  { return a < 0x100000; }
 static inline int is_ram2(uint32_t a)  { return a >= 0x500000 && a < 0x580000; }
-static inline int is_nvram(uint32_t a) { return a >= 0x3F8000 && a < 0x3FC000; }
+/* NVRAM proper; $3FBFF0-$3FBFFF is the M48T08 clock (rtc_m48t08.c) */
+static inline int is_nvram(uint32_t a) { return a >= 0x3F8000 && a < 0x3FBFF0; }
 static inline int is_rom(uint32_t a)   { return a >= 0x180000 && a < 0x200000; }
 static inline uint32_t rom_off(uint32_t a) { return a - 0x180000; }
 static inline uint32_t nv_off(uint32_t a)  { return a - 0x3F8000; }
 static inline uint32_t ram2_off(uint32_t a){ return a - 0x500000; }
 
 scc66470_t *bus_get_video(bus_t *b);
+
+/* ---- NVRAM / RTC persistence ----
+ * nvram.bin (16 KB raw image) + nvram.rtc (clock offset), in the current
+ * directory, or <EMU_NVRAM>.bin / <EMU_NVRAM>.rtc when EMU_NVRAM is set.
+ * bus_nvram_poll(): autosave 2 s after the last NVRAM change.
+ * Slots: saves/slot<N>.sav (NVRAM + clock), N = 1..9. */
+void bus_nvram_poll(bus_t *b);
+int  bus_nvram_flush(bus_t *b);
+int  bus_save_slot(bus_t *b, int slot);
+int  bus_load_slot(bus_t *b, int slot);
 scc66470_t *bus_get_video_slave(bus_t *b);
 
 struct onchip68070;

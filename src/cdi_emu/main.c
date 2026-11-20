@@ -26,8 +26,33 @@
 #include "core/SLAVE/slave.h"
 #include "core/CPU/onchip68070.h"
 
-/* Global instances for video controller and slave co-processor */
-static slave_t    g_slave;
+/* ---- Save / recall hotkeys (NVRAM + clock) ----
+ *   F5 = save to the current slot, F9 = recall it, F6 = next slot (1..9) */
+static bus_t *g_hotkey_bus = NULL;
+static int    g_save_slot  = 1;
+
+static int hotkey(int fkey)
+{
+    if (!g_hotkey_bus) return 0;
+    switch (fkey) {
+    case 5: bus_save_slot(g_hotkey_bus, g_save_slot); return 1;
+    case 9: bus_load_slot(g_hotkey_bus, g_save_slot); return 1;
+    case 6:
+        g_save_slot = g_save_slot % 9 + 1;
+        fprintf(stderr, "[SAVE] current slot: %d (F5 save, F9 recall)\n", g_save_slot);
+        return 1;
+    }
+    return 0;
+}
+
+/* Pointer events from the video window -> 68HC05 HLE (pointer packets) */
+static void pointer_event(void *ctx, int x, int y, int buttons)
+{
+    slave_backend_t *be = ctx;
+    uint8_t rep[6] = { 1, (uint8_t)(x >> 8), (uint8_t)x, (uint8_t)(y >> 8), (uint8_t)y,
+                       (uint8_t)buttons };
+    if (be && be->push_input) be->push_input(be->ctx, rep, (int)sizeof(rep));
+}
 
 /*
  * Debug routine: verify the ROM checksum against reference values
@@ -100,24 +125,14 @@ int main(int argc, char* argv[]) {
     m68k_init(&cpu);
     m68k_set_bus(&cpu, bus);
 
-    /* --- Set up the slave co-processor (HLE mode by default) --- */
-    slave_backend_t *be = NULL;
-
-    /* If a 68HC05 ROM dump is available, LLE could be used here:
-     * be = slave_lle_create(hc05_rom, hc05_len);
-     */
-
-    /* Fall back to HLE (high-level emulation) when no HC05 ROM is available */
-    if (!be) {
-        be = slave_hle_create();
-        fprintf(stderr, "[SLAVE] backend = %s\n", be->name);
-    }
-
-    /* Connect the slave's UART injection callback */
+    /* --- Slave co-processor (68HC05): the bus owns the backend (HLE).
+     * With a 68HC05 ROM dump, slave_lle_create() could replace it. --- */
+    slave_backend_t *be = bus->slave;
+    fprintf(stderr, "[SLAVE] backend = %s\n", be->name);
     slave_hle_set_uart(be, (uart_inject_fn)uart_inject_rx, bus);
-
-    slave_attach(&g_slave, be);
-    slave_reset(&g_slave);
+    video_display_set_pointer_cb(pointer_event, be);
+    g_hotkey_bus = bus;
+    uart_console_set_hotkey_cb(hotkey);
 
     /* Reset the CPU (loads PC and SP from the ROM reset vector) */
     m68k_reset(&cpu);
@@ -183,11 +198,17 @@ int main(int argc, char* argv[]) {
         scc66470_tick(video, cycles);
         scc66470_tick(video_b, cycles);
 
-        /* On-chip timer, then present the highest pending interrupt */
+        /* On-chip timer, then present the highest pending interrupt:
+         * on-chip sources (autovectors 57..63) and the 68HC05 on IN2N
+         * (level 2, autovector 26 - descriptors ptr/pck/slave). */
         onchip68070_tick(onchip, cycles);
         {
             int vector = 0;
             int level = onchip68070_irq(onchip, &vector);
+            if (level < 2 && be->irq && be->irq(be->ctx)) {
+                level = 2;
+                vector = 26;
+            }
             m68k_set_irq(&cpu, level, vector);
         }
 
@@ -201,6 +222,7 @@ int main(int argc, char* argv[]) {
         if (++update_counter >= 20000) {
             update_counter = 0;
             running = uart_console_update();
+            bus_nvram_poll(bus);              /* autosave game saves / clock */
             if (running)
                 running = video_display_update(video, bus);
         }

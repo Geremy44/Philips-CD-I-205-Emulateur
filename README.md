@@ -28,6 +28,9 @@ Ce qui fonctionne :
   lecture-modification-écriture corrects.
 - **Périphériques internes du 68070** : timer T0/T1/T2 (tick OS-9 à 100 Hz),
   registres de priorité PICR1/PICR2, UART (console SDL).
+- **68HC05 (HLE)** : réponses aux requêtes de CD-RTOS, IRQ niveau 2,
+  pointeur absolu (souris / clavier).
+- **NVRAM + horloge M48T08** : sauvegarde automatique, slots F5/F9.
 - **Vidéo** : les deux SCC66470 d'après leur datasheet (maître = plan A en
   DRAM banque 1, esclave = plan B en banque 2) — programmes ICA/DCA,
   fichiers bitmap / run-length / mosaïque en 4 et 8 bits/pixel, bordure,
@@ -36,8 +39,30 @@ Ce qui fonctionne :
   superposition, curseur).
 
 Pas encore émulé : mixage pondéré des plans, DYUV/RGB555, interruptions
-UART/I²C, CDIC (lecture de disque), audio, entrées (manette /
-télécommande), cartouche FMV.
+UART/I²C, CDIC (lecture de disque), audio, afficheur de façade,
+cartouche FMV.
+
+### Contrôles
+
+| Action | Touche / souris (fenêtre vidéo) |
+|---|---|
+| Déplacer le curseur CD-i | souris, ou flèches (Maj = plus vite) |
+| Bouton 1 / bouton 2 | clic gauche / droit, ou Espace-Entrée / Retour arrière |
+| Sauvegarder NVRAM + horloge dans le slot courant | **F5** |
+| Rappeler le slot courant | **F9** |
+| Slot suivant (1 → 9) | **F6** |
+
+### Sauvegardes de jeu et horloge
+
+- La NVRAM (où les jeux CD-i enregistrent leurs parties) est écrite dans
+  `nvram.bin` **automatiquement 2 s après chaque modification**, et à la
+  fermeture ; l'écriture est atomique (fichier temporaire puis renommage).
+- L'horloge M48T08 (`$3FBFF0`) suit l'heure du PC ; si on la règle depuis le
+  CD-i, seul le décalage est mémorisé dans `nvram.rtc`, et elle continue
+  donc de tourner entre deux sessions.
+- `EMU_NVRAM=chemin/nom` utilise `nom.bin` / `nom.rtc` à la place (une
+  NVRAM par joueur ou par jeu, par exemple).
+- F5 / F9 : instantanés complets NVRAM + horloge dans `saves/slotN.sav`.
 
 ### Options de debug (variables d'environnement)
 
@@ -47,6 +72,8 @@ télécommande), cartouche FMV.
 | `EMU_VIDEO_DUMP=frame.bmp` | enregistre l'image affichée à chaque changement |
 | `EMU_TRACE=1`, `EMU_TRACE_MAX=n` | trace instruction par instruction |
 | `EMU_PC_POLL=n` | affiche le PC toutes les `n` instructions |
+| `EMU_SLAVE_LOG=1` | journalise le dialogue avec le 68HC05 |
+| `EMU_NVRAM=nom` | fichiers NVRAM/horloge `nom.bin` / `nom.rtc` |
 
 ---
 
@@ -60,6 +87,7 @@ src/cdi_emu/
 └── core/
     ├── bus.c/h               ← carte mémoire et routage MMIO
     ├── rom_loader.c/h        ← chargeur Intel HEX
+    ├── rtc_m48t08.c/h        ← horloge M48T08 (RTC) de la NVRAM
     ├── CPU/
     │   ├── m68k*.c/h         ← CPU 68070 (décodage, modes d'adressage, exceptions)
     │   ├── onchip68070.c/h   ← timer + PICR du 68070
@@ -69,7 +97,7 @@ src/cdi_emu/
     │   ├── scc66470.c/h      ← contrôleur vidéo SCC66470 ×2 (registres, ICA/DCA, rendu)
     │   ├── vsd.c/h           ← V.S.D. : palette, codage, transparence, plans, curseur
     │   └── video_display.c/h ← fenêtre vidéo SDL2
-    ├── SLAVE/                ← co-processeur 68HC05 (HLE, squelette LLE)
+    ├── SLAVE/                ← co-processeur 68HC05 (HLE : requêtes, pointeur)
     └── CDIC/                 ← contrôleur CD (stub)
 ```
 
@@ -116,8 +144,9 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 | V.S.D. : palette, transparence, ordre des plans, curseur | ✅ Terminé (superposition) |
 | V.S.D. : mixage pondéré, DYUV | 🔲 À démarrer |
 | Analyse CDIC | ⚠️ En cours |
-| Émulation NVRAM | ⚠️ En cours |
-| Entrées (manette, télécommande via 68HC05) | 🔲 À démarrer |
+| Émulation NVRAM + horloge (sauvegardes) | ✅ Terminé |
+| Entrées : pointeur via 68HC05 (HLE) | ✅ Terminé |
+| Afficheur de façade | 🔲 À démarrer |
 | Émulation DMA audio | 🔲 À démarrer |
 
 ### Axe FMV — implémentation en cours

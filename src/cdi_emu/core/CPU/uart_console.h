@@ -24,6 +24,11 @@ void uart_console_putchar(char c);
  */
 int uart_console_update(void);
 
+/* Emulator hotkeys (F1..F12), active in every window. The callback gets
+ * the function key number (5 for F5...) and returns 1 if it used it. */
+typedef int (*uart_hotkey_cb)(int fkey);
+void uart_console_set_hotkey_cb(uart_hotkey_cb cb);
+
 /* Check if a keyboard character is available in the RX buffer */
 int uart_console_has_input(void);
 

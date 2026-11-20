@@ -34,4 +34,14 @@ int video_display_update(void *scc66470, void *bus);
 /* Get the SDL2 window ID (used by uart_console to distinguish close events) */
 uint32_t video_display_get_window_id(void);
 
+/* Pointer input: the video window turns mouse (and arrow keys + Space /
+ * Enter / Backspace) into an absolute pointer position (0..1023) and
+ * buttons (bit 0 = button 1, bit 1 = button 2), reported through cb. */
+typedef void (*video_pointer_cb)(void *ctx, int x, int y, int buttons);
+void video_display_set_pointer_cb(video_pointer_cb cb, void *ctx);
+
+/* Called for every SDL event; returns 1 if the event belongs to the video
+ * window and was consumed (opaque pointer to an SDL_Event). */
+int video_display_handle_event(const void *sdl_event);
+
 #endif /* VIDEO_DISPLAY_H */

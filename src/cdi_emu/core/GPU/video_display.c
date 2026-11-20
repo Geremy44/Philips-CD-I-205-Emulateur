@@ -100,6 +100,93 @@ uint32_t video_display_get_window_id(void)
     return window_id;
 }
 
+/* ===== Pointer input ===== */
+
+static video_pointer_cb pointer_cb = NULL;
+static void            *pointer_ctx = NULL;
+static int ptr_x = 384, ptr_y = 240, ptr_buttons = 0;
+static int frame_w = SCC_OUT_MAX_W, frame_h = 240;   /* last displayed geometry */
+
+void video_display_set_pointer_cb(video_pointer_cb cb, void *ctx)
+{
+    pointer_cb = cb;
+    pointer_ctx = ctx;
+}
+
+static void pointer_report(void)
+{
+    if (ptr_x < 0) ptr_x = 0;
+    if (ptr_y < 0) ptr_y = 0;
+    if (ptr_x > 1023) ptr_x = 1023;
+    if (ptr_y > 1023) ptr_y = 1023;
+    if (pointer_cb) pointer_cb(pointer_ctx, ptr_x, ptr_y, ptr_buttons);
+}
+
+/* Window pixel -> pointer units, as measured against the shell's cursor:
+ * X in 4-bit-pixel columns (0..width-1), Y in half display lines
+ * (0..2*lines-1, the shell halves it). */
+static void window_to_pointer(int wx, int wy)
+{
+    int ww = WIN_W, wh = WIN_H;
+    if (win) SDL_GetWindowSize(win, &ww, &wh);
+    if (ww <= 0 || wh <= 0) return;
+    ptr_x = wx * frame_w / ww;
+    ptr_y = wy * frame_h * 2 / wh;
+}
+
+int video_display_handle_event(const void *ev)
+{
+    const SDL_Event *e = (const SDL_Event *)ev;
+    if (!initialized) return 0;
+
+    switch (e->type) {
+    case SDL_MOUSEMOTION:
+        if (e->motion.windowID != window_id) return 0;
+        window_to_pointer(e->motion.x, e->motion.y);
+        pointer_report();
+        return 1;
+    case SDL_MOUSEBUTTONDOWN:
+    case SDL_MOUSEBUTTONUP: {
+        if (e->button.windowID != window_id) return 0;
+        int bit = (e->button.button == SDL_BUTTON_LEFT)  ? 1 :
+                  (e->button.button == SDL_BUTTON_RIGHT) ? 2 : 0;
+        if (!bit) return 1;
+        window_to_pointer(e->button.x, e->button.y);
+        if (e->type == SDL_MOUSEBUTTONDOWN) ptr_buttons |= bit; else ptr_buttons &= ~bit;
+        pointer_report();
+        return 1;
+    }
+    case SDL_KEYDOWN:
+    case SDL_KEYUP: {
+        if (e->key.windowID != window_id) return 0;
+        int down = (e->type == SDL_KEYDOWN);
+        int step = (SDL_GetModState() & KMOD_SHIFT) ? 16 : 4;
+        switch (e->key.keysym.sym) {
+        case SDLK_LEFT:  if (down) ptr_x -= step * 2; break;
+        case SDLK_RIGHT: if (down) ptr_x += step * 2; break;
+        case SDLK_UP:    if (down) ptr_y -= step * 2; break;
+        case SDLK_DOWN:  if (down) ptr_y += step * 2; break;
+        case SDLK_SPACE:
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:
+            if (down) ptr_buttons |= 1; else ptr_buttons &= ~1;
+            break;
+        case SDLK_BACKSPACE:
+            if (down) ptr_buttons |= 2; else ptr_buttons &= ~2;
+            break;
+        default:
+            return 1;
+        }
+        pointer_report();
+        return 1;
+    }
+    case SDL_TEXTINPUT:
+        /* typed text belongs to the UART terminal, not the video window */
+        return e->text.windowID == window_id;
+    }
+    return 0;
+}
+
 /* Log display state changes (EMU_VIDEO_LOG=1) */
 typedef struct {
     uint16_t dcr, dcr2;
@@ -205,6 +292,7 @@ int video_display_update(void *scc66470, void *bus)
         vsd_command(&vsd, frame_b->bep[i]);
 
     int w = frame->width, h = frame->height;
+    frame_w = w; frame_h = h;
     if (!frame->enabled && !frame_b->enabled) {
         /* DE = 0 on both: no picture */
         memset(pixels, 0, (size_t)SCC_OUT_MAX_W * SCC_OUT_MAX_H * sizeof(uint32_t));

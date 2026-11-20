@@ -378,6 +378,9 @@ void uart_console_init(void) {
  * current screen state with the TrueType font.
  * Returns 0 if the user closed the window, 1 otherwise.
  */
+static uart_hotkey_cb hotkey_cb = NULL;
+void uart_console_set_hotkey_cb(uart_hotkey_cb cb) { hotkey_cb = cb; }
+
 int uart_console_update(void) {
     if (!initialized) return 1;
 
@@ -388,6 +391,13 @@ int uart_console_update(void) {
      * window close sets a flag that video_display_update checks. */
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+        /* Mouse / keys aimed at the video window drive the CD-i pointer */
+        extern int video_display_handle_event(const void *sdl_event);
+        if (e.type == SDL_KEYDOWN && !e.key.repeat && hotkey_cb &&
+            e.key.keysym.sym >= SDLK_F1 && e.key.keysym.sym <= SDLK_F12 &&
+            hotkey_cb((int)(e.key.keysym.sym - SDLK_F1) + 1))
+            continue;
+        if (video_display_handle_event(&e)) continue;
         switch (e.type) {
         case SDL_QUIT:
             return 0;

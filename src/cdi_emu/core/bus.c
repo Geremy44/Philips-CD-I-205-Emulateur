@@ -24,6 +24,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
 
 /* I/O register shadow space for non-decoded registers */
 #define IO_BASE  0x80000000
@@ -76,37 +82,152 @@ static uint8_t io_regs[IO_SIZE];
 /* Accessor for uart.c to read/write the raw I/O shadow array */
 uint8_t *uart_io_regs_ptr(void) { return io_regs; }
 
-#define NVRAM_FILE "nvram.bin"
+/* ===== NVRAM / RTC persistence ===== */
 
-/*
- * Load NVRAM contents from disk. If the file doesn't exist or is
- * the wrong size, NVRAM starts zeroed.
- */
-static void nvram_load(bus_t *b) {
-    FILE *f = fopen(NVRAM_FILE, "rb");
-    if (!f) {
-        printf("[NVRAM] No '%s' file, starting fresh\n", NVRAM_FILE);
-        return;
-    }
-    size_t n = fread(b->nvram, 1, sizeof(b->nvram), f);
-    fclose(f);
-    if (n == sizeof(b->nvram))
-        printf("[NVRAM] Loaded from '%s' (%zu bytes)\n", NVRAM_FILE, n);
-    else
-        printf("[NVRAM] '%s' unexpected size (%zu/%zu), partial load\n",
-               NVRAM_FILE, n, sizeof(b->nvram));
+#define NVRAM_BASENAME "nvram"
+#define AUTOSAVE_DELAY 2          /* seconds after the last NVRAM change */
+#define SAVE_MAGIC     "CDI205SV"
+#define SAVE_VERSION   1u
+#define SAVE_HDR       36         /* bytes before the NVRAM image */
+
+static void nvram_paths(char *bin, char *rtc, size_t n)
+{
+    const char *base = getenv("EMU_NVRAM");
+    if (!base || !*base) base = NVRAM_BASENAME;
+    snprintf(bin, n, "%s.bin", base);
+    snprintf(rtc, n, "%s.rtc", base);
 }
 
-/* Save NVRAM contents to disk on shutdown */
-static void nvram_save(bus_t *b) {
-    FILE *f = fopen(NVRAM_FILE, "wb");
+/* Write a file atomically: temp file, then rename (never a half-written save) */
+static int write_atomic(const char *path, const void *data, size_t len)
+{
+    char tmp[512];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return -1;
+    size_t n = fwrite(data, 1, len, f);
+    if (fclose(f) != 0 || n != len) { remove(tmp); return -1; }
+    remove(path);                         /* rename() does not overwrite on Windows */
+    if (rename(tmp, path) != 0) { remove(tmp); return -1; }
+    return 0;
+}
+
+static void nvram_load(bus_t *b)
+{
+    char bin[512], rtc[512];
+    nvram_paths(bin, rtc, sizeof(bin));
+    FILE *f = fopen(bin, "rb");
     if (!f) {
-        fprintf(stderr, "[NVRAM] ERROR: cannot write '%s'\n", NVRAM_FILE);
-        return;
+        printf("[NVRAM] No '%s' file, starting fresh\n", bin);
+    } else {
+        size_t n = fread(b->nvram, 1, sizeof(b->nvram), f);
+        fclose(f);
+        if (n == sizeof(b->nvram))
+            printf("[NVRAM] Loaded from '%s' (%zu bytes)\n", bin, n);
+        else
+            printf("[NVRAM] '%s' unexpected size (%zu/%zu), partial load\n",
+                   bin, n, sizeof(b->nvram));
     }
-    size_t n = fwrite(b->nvram, 1, sizeof(b->nvram), f);
+    if (rtc_load(&b->rtc, rtc) == 0)
+        printf("[RTC] Clock offset loaded from '%s' (%lld s)\n", rtc, (long long)b->rtc.offset);
+    else
+        printf("[RTC] No '%s', the clock follows the host time\n", rtc);
+}
+
+int bus_nvram_flush(bus_t *b)
+{
+    char bin[512], rtc[512];
+    nvram_paths(bin, rtc, sizeof(bin));
+    int err = write_atomic(bin, b->nvram, sizeof(b->nvram));
+    if (rtc_save(&b->rtc, rtc) != 0) err = -1;
+    if (err) fprintf(stderr, "[NVRAM] ERROR: cannot write '%s' / '%s'\n", bin, rtc);
+    else     b->nvram_dirty = 0;
+    return err;
+}
+
+static void nvram_save(bus_t *b)
+{
+    if (bus_nvram_flush(b) == 0) {
+        char bin[512], rtc[512];
+        nvram_paths(bin, rtc, sizeof(bin));
+        printf("[NVRAM] Saved to '%s' + '%s'\n", bin, rtc);
+    }
+}
+
+static void nvram_touch(bus_t *b)
+{
+    b->nvram_dirty = 1;
+    b->nvram_last_write = time(NULL);
+}
+
+void bus_nvram_poll(bus_t *b)
+{
+    if (b->nvram_dirty && time(NULL) - b->nvram_last_write >= AUTOSAVE_DELAY) {
+        if (bus_nvram_flush(b) == 0)
+            fprintf(stderr, "[NVRAM] autosaved\n");
+    }
+}
+
+/* Save slot file (little-endian):
+ *   magic[8] "CDI205SV", version u32, rtc offset i64, stopped u32,
+ *   stopped_at i64, control u32, then the 16 KB NVRAM image */
+static void put_u32(uint8_t *p, uint32_t v) { for (int i = 0; i < 4; i++) p[i] = (uint8_t)(v >> (8 * i)); }
+static void put_i64(uint8_t *p, int64_t v)  { for (int i = 0; i < 8; i++) p[i] = (uint8_t)((uint64_t)v >> (8 * i)); }
+static uint32_t get_u32(const uint8_t *p) { uint32_t v = 0; for (int i = 3; i >= 0; i--) v = (v << 8) | p[i]; return v; }
+static int64_t  get_i64(const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; i--) v = (v << 8) | p[i]; return (int64_t)v; }
+
+static void slot_path(char *out, size_t n, int slot)
+{
+    snprintf(out, n, "saves/slot%d.sav", slot);
+}
+
+int bus_save_slot(bus_t *b, int slot)
+{
+    static uint8_t buf[SAVE_HDR + 0x4000];
+    char path[256];
+    memcpy(buf, SAVE_MAGIC, 8);
+    put_u32(buf + 8,  SAVE_VERSION);
+    put_i64(buf + 12, b->rtc.offset);
+    put_u32(buf + 20, (uint32_t)b->rtc.stopped);
+    put_i64(buf + 24, b->rtc.stopped_at);
+    put_u32(buf + 32, b->rtc.control & 0x3Fu);
+    memcpy(buf + SAVE_HDR, b->nvram, sizeof(b->nvram));
+#ifdef _WIN32
+    _mkdir("saves");
+#else
+    mkdir("saves", 0777);
+#endif
+    slot_path(path, sizeof(path), slot);
+    if (write_atomic(path, buf, sizeof(buf)) != 0) {
+        fprintf(stderr, "[SAVE] ERROR: cannot write '%s'\n", path);
+        return -1;
+    }
+    fprintf(stderr, "[SAVE] NVRAM + clock saved to '%s'\n", path);
+    return 0;
+}
+
+int bus_load_slot(bus_t *b, int slot)
+{
+    static uint8_t buf[SAVE_HDR + 0x4000];
+    char path[256];
+    slot_path(path, sizeof(path), slot);
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "[SAVE] '%s' not found\n", path); return -1; }
+    size_t n = fread(buf, 1, sizeof(buf), f);
     fclose(f);
-    printf("[NVRAM] Saved to '%s' (%zu bytes)\n", NVRAM_FILE, n);
+    if (n != sizeof(buf) || memcmp(buf, SAVE_MAGIC, 8) != 0 || get_u32(buf + 8) != SAVE_VERSION) {
+        fprintf(stderr, "[SAVE] '%s' is not a valid save (%zu bytes)\n", path, n);
+        return -1;
+    }
+    b->rtc.offset     = get_i64(buf + 12);
+    b->rtc.stopped    = (int)get_u32(buf + 20);
+    b->rtc.stopped_at = get_i64(buf + 24);
+    b->rtc.control    = (uint8_t)(get_u32(buf + 32) & 0x3Fu);
+    b->rtc.staged     = 0;
+    memcpy(b->nvram, buf + SAVE_HDR, sizeof(b->nvram));
+    nvram_touch(b);                       /* the recalled state becomes the current one */
+    fprintf(stderr, "[SAVE] NVRAM + clock recalled from '%s'\n", path);
+    return 0;
 }
 
 /* ===== Bus lifecycle ===== */
@@ -120,6 +241,7 @@ bus_t *bus_create(void) {
     memset(b->dram,  0x00, sizeof(b->dram));
     memset(b->ram2,  0x00, sizeof(b->ram2));
     memset(b->nvram, 0x00, sizeof(b->nvram));
+    rtc_init(&b->rtc);
     nvram_load(b);
     b->trace = 1;
 
@@ -243,6 +365,7 @@ uint8_t bus_read8(bus_t *b, uint32_t addr) {
     if (is_dram(addr))  return b->dram[addr];
     if (is_ram2(addr))  return b->ram2[ram2_off(addr)];
     if (is_nvram(addr)) return b->nvram[nv_off(addr)];
+    if (rtc_handles(addr)) return rtc_read8(&b->rtc, addr);
     if (is_rom(addr))   return b->rom[rom_off(addr)];
 
     return io_read_stub(addr) & 0xFF;
@@ -325,7 +448,11 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
     /* Standard memory regions */
     if (is_dram(addr))  { b->dram[addr] = v; return; }
     if (is_ram2(addr))  { b->ram2[ram2_off(addr)] = v; return; }
-    if (is_nvram(addr)) { b->nvram[nv_off(addr)] = v; return; }
+    if (is_nvram(addr)) {
+        if (b->nvram[nv_off(addr)] != v) { b->nvram[nv_off(addr)] = v; nvram_touch(b); }
+        return;
+    }
+    if (rtc_handles(addr)) { rtc_write8(&b->rtc, addr, v); nvram_touch(b); return; }
     if (is_rom(addr))   return;  /* ROM is read-only */
 
     io_write_stub(addr, v);
@@ -357,8 +484,11 @@ void bus_write16(bus_t *b, uint32_t addr, uint16_t v) {
     /* NVRAM (big-endian) */
     if (is_nvram(addr)) {
         uint32_t o = nv_off(addr);
-        b->nvram[o]     = v >> 8;
-        b->nvram[o + 1] = v & 0xFF;
+        if (b->nvram[o] != (uint8_t)(v >> 8) || b->nvram[o + 1] != (uint8_t)v) {
+            b->nvram[o]     = v >> 8;
+            b->nvram[o + 1] = v & 0xFF;
+            nvram_touch(b);
+        }
         return;
     }
 
