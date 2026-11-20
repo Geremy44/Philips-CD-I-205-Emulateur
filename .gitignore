@@ -26,6 +26,9 @@ tools/modules/
 tools/modules_fmv/
 *.gpr
 *.rep/
+# copies de dossiers .git (contiennent tout l'historique, ROM comprises)
+.git.backup/
+*.bundle
 
 # 🛠️ Build de l'émulateur
 # -----------------------------------------------------------------------------
