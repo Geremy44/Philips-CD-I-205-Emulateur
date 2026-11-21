@@ -29,6 +29,10 @@ int uart_console_update(void);
 typedef int (*uart_hotkey_cb)(int fkey);
 void uart_console_set_hotkey_cb(uart_hotkey_cb cb);
 
+/* Serial console window: hidden by default (EMU_CONSOLE=1 shows it) */
+void uart_console_set_visible(int on);
+int  uart_console_is_visible(void);
+
 /* Check if a keyboard character is available in the RX buffer */
 int uart_console_has_input(void);
 

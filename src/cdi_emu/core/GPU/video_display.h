@@ -48,4 +48,23 @@ int video_display_handle_event(const void *sdl_event);
  * relative impulse (dx, dy) instead of an absolute position */
 #define VIDEO_PTR_IMPULSE 0x100
 
+/* Switch between window and full screen (F11, Alt+Enter) */
+void video_display_toggle_fullscreen(void);
+
+/* Show / hide the PC mouse cursor over the video window (F8) */
+void video_display_toggle_host_cursor(void);
+/* Show the PC cursor again (on exit) */
+void video_display_restore_host_cursor(void);
+
+/* Menu bar of the video window (native on Windows). The callback gets the
+ * command id; video_display_menu_check() sets an item's check mark. */
+enum {
+    VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT,
+    VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
+    VM_SWAP = 1201
+};
+typedef void (*video_menu_cb)(int id);
+void video_display_set_menu_cb(video_menu_cb cb);
+void video_display_menu_check(int id, int on);
+
 #endif /* VIDEO_DISPLAY_H */

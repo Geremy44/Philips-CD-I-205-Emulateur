@@ -16,7 +16,10 @@
 
 Avec la ROM `CDI205-00_PS-7211_REL.2.1`, l'émulateur démarre CD-RTOS jusqu'au
 **menu principal du CD-i, en couleurs** (fond, logo PHILIPS, boutons INFO /
-SETTINGS / DIM / MEMORY / OPEN, curseur matériel) :
+SETTINGS / DIM / MEMORY / OPEN, curseur matériel), lance les disques CD-i,
+et **fait tourner un jeu complet** : *Astérix : Le Défi de César* est
+jouable de bout en bout (intro, dessins animés, menus, plateaux, voix,
+musique et bruitages) :
 
 ![Menu du CD-i 205 rendu par l'émulateur](src/cdi_emu/menu_cdi_boot.png)
 
@@ -65,14 +68,24 @@ Ce qui fonctionne :
 - **Sons en mémoire** (« ap ») : tampons `$2800`/`$3200` remplis par DMA,
   lecture via AUDCTL/ABUF avec interruption (voix et bruitages des jeux).
 - **Pointeur relatif** : le 68HC05 applique les repositionnements du pilote
-  (`C0..` sur `$200001`) ; la souris donne des déplacements, les flèches des
-  impulsions (jeux qui lisent le pointeur comme une manette).
+  (`C0..` sur `$200001`) ; tant que le jeu recentre le curseur, la souris
+  donne des déplacements, sinon le curseur CD-i suit la souris du PC
+  (recalage mesuré sur le curseur du shell : Y × 240/560). Les flèches
+  envoient des impulsions (jeux qui lisent le pointeur comme une manette).
+- **Bus 24 bits** : comme le 68070, l'octet de poids fort des adresses est
+  ignoré (hors périphériques internes `$80000000+`) ; certains jeux rangent
+  des drapeaux dans les pointeurs.
+- **Cadence** : image, entrées et synchronisation au temps réel une fois par
+  trame vidéo (50 Hz), avec une horloge haute précision.
+- **Fenêtre** : surface 4:3 redimensionnable, plein écran avec bandes
+  noires, barre de menus (Windows), souris du PC masquée sur l'image,
+  console série masquable, fermeture par la fenêtre vidéo.
 
-Pas encore émulé : audio CD-DA, drapeaux de région (matte) et facteurs
-par région, bit T du RGB555 dans la transparence des plans, RGB555, valeurs de départ DYUV rechargées ligne
-par ligne, interruptions
-UART/I²C, éjection / changement de disque en cours de route, afficheur de
-façade, cartouche FMV.
+Pas encore émulé : audio CD-DA (CD audio), éjection / changement de disque
+depuis le bouton OPEN, drapeaux de région (matte) et facteurs par région,
+codage RGB555 et son bit de transparence, valeurs de départ DYUV rechargées
+ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
+(MPEG, nécessaire par exemple pour *The 7th Guest*).
 
 ### Charger un disque
 
@@ -87,13 +100,28 @@ MODE1/MODE2/AUDIO en 2352 octets), `.bin`/`.img` brut (une piste CD-i),
 
 ### Contrôles
 
+La fenêtre vidéo a une barre de menus (Fichier / Affichage / Contrôles) ;
+la fermer quitte l'émulateur. La console série est masquée par défaut
+(menu Affichage, ou `EMU_CONSOLE=1`).
+
 | Action | Touche / souris (fenêtre vidéo) |
 |---|---|
-| Déplacer le curseur CD-i | souris, ou flèches (Maj = plus vite) |
-| Bouton 1 (valider) / bouton 2 | clic gauche / droit, ou Espace-Entrée / Retour arrière |
+| Déplacer le curseur CD-i | souris (le curseur CD-i reste sous la souris) |
+| Impulsions de direction (jeux « manette ») | flèches (Maj = ×3, `EMU_IMPULSE`) |
+| Boutons du CD-i | clics gauche / droit (inversés par défaut comme sur la manette, **F7** pour échanger), ou Espace-Entrée / Retour arrière |
+| Plein écran 4:3 (bandes noires) / fenêtre | **F11** ou **Alt+Entrée** |
+| Afficher / masquer la souris du PC sur l'image | **F8** |
+| Inverser clic gauche / droit | **F7** |
 | Sauvegarder NVRAM + horloge dans le slot courant | **F5** |
 | Rappeler le slot courant | **F9** |
 | Slot suivant (1 → 9) | **F6** |
+
+### Build portable (Windows)
+
+`src/cdi_emu/dist/cdi205-portable/` (ignoré par git) : `cdi205.exe`, DLL
+SDL2 et dépendances UCRT64, `ROM/`, `lancer.bat` (glisser un `.cue` dessus)
+et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
+à renvoyer pour un rejeu identique d'un bug).
 
 ### Sauvegardes de jeu et horloge
 
@@ -129,6 +157,9 @@ MODE1/MODE2/AUDIO en 2352 octets), `.bin`/`.img` brut (une piste CD-i),
 | `EMU_INPUT_REC=f.rec` / `EMU_INPUT_PLAY=f.rec` | enregistre / rejoue souris et clics au pas près (tests reproductibles) |
 | `EMU_AUTOCLICK=x,y,pas` | clic automatique du bouton 1 (répété 8 fois) |
 | `EMU_NVRAM=nom` | fichiers NVRAM/horloge `nom.bin` / `nom.rtc` |
+| `EMU_CONSOLE=1` | affiche la console série au démarrage |
+| `EMU_SWAP_BUTTONS=0` | n'inverse pas les boutons de la souris |
+| `EMU_PACE_LOG=1` | histogramme des intervalles entre trames (régularité) |
 
 ---
 
@@ -198,14 +229,18 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 | SCC66470 esclave (plan B) | ✅ Terminé |
 | V.S.D. : palette, transparence, ordre des plans, curseur | ✅ Terminé (superposition) |
 | V.S.D. : DYUV | ✅ Terminé |
-| V.S.D. : mixage pondéré, RGB555 | 🔲 À démarrer |
-| CDIC : commandes, TOC, lecture de secteurs | ✅ Terminé (à valider sur de vrais disques) |
+| V.S.D. : facteurs DB/DC, mixage (fondus) | ✅ Terminé |
+| V.S.D. : RGB555, régions (matte) | 🔲 À démarrer |
+| CDIC : commandes, TOC, lecture de secteurs | ✅ Terminé (Astérix jouable) |
 | CDIC : audio ADPCM (lecture disque) | ✅ Terminé |
-| CDIC : audio CD-DA, sons en mémoire (« ap ») | 🔲 À démarrer |
+| CDIC : sons en mémoire (« ap ») | ✅ Terminé |
+| CDIC : audio CD-DA (CD audio) | 🔲 À démarrer |
+| Bouton OPEN : changer de disque | ⚠️ En cours |
 | Émulation NVRAM + horloge (sauvegardes) | ✅ Terminé |
-| Entrées : pointeur via 68HC05 (HLE) | ✅ Terminé |
+| Entrées : pointeur via 68HC05 (HLE, absolu + relatif) | ✅ Terminé |
+| Vitesse réelle, plein écran 4:3, menus | ✅ Terminé |
 | Afficheur de façade | 🔲 À démarrer |
-| Émulation DMA audio | 🔲 À démarrer |
+| DMA 68070 ↔ CDIC (données et audio) | ✅ Terminé |
 
 ### Axe FMV — implémentation en cours
 | Tâche | État |

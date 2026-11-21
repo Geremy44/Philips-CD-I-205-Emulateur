@@ -394,7 +394,17 @@ static void io_write_stub(uint32_t addr, uint16_t v) {
 
 /* ===== Bus read/write - 8/16/32 bit ===== */
 
+/* SCC68070 address space: the external bus has 24 address lines, so bits
+ * 31-24 are ignored ($40076CDC reads $076CDC -- Asterix keeps flags in the
+ * top byte of its pointers); only the on-chip peripherals ($80000000+) are
+ * decoded on 32 bits. */
+static inline uint32_t addr24(uint32_t addr)
+{
+    return (addr & 0x80000000u) ? addr : (addr & 0x00FFFFFFu);
+}
+
 uint8_t bus_read8(bus_t *b, uint32_t addr) {
+    addr = addr24(addr);
 
     /* UART register access (any address matching the UART base pattern) */
     if ((addr & 0xFFFFFFF0u) == 0x80002010u) {
@@ -445,6 +455,7 @@ uint8_t bus_read8(bus_t *b, uint32_t addr) {
 }
 
 uint16_t bus_read16(bus_t *b, uint32_t addr) {
+    addr = addr24(addr);
     /* SCC66470 16-bit register access */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF)
     {
@@ -490,6 +501,7 @@ uint32_t bus_read32(bus_t *b, uint32_t addr) {
 }
 
 void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
+    addr = addr24(addr);
     watch(addr, v, 8);
 
     /* CDIC RAM */
@@ -537,6 +549,7 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
 }
 
 void bus_write16(bus_t *b, uint32_t addr, uint16_t v) {
+    addr = addr24(addr);
     watch(addr, v, 16);
 
     /* CDIC RAM and registers */

@@ -36,6 +36,7 @@
 
 /* ===== SDL2 state ===== */
 static SDL_Window   *win  = NULL;
+static int console_wanted(void);
 static SDL_Renderer *ren  = NULL;
 static TTF_Font     *font = NULL;
 static int initialized = 0;
@@ -345,7 +346,7 @@ void uart_console_init(void) {
     win = SDL_CreateWindow("UART Terminal - CD-I",
                             SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                             UART_COLS * CHAR_W, UART_ROWS * CHAR_H,
-                            SDL_WINDOW_SHOWN);
+                            console_wanted() ? SDL_WINDOW_SHOWN : SDL_WINDOW_HIDDEN);
     if (!win) {
         fprintf(stderr, "[uart_console] SDL_CreateWindow error: %s\n", SDL_GetError());
         return;
@@ -379,6 +380,28 @@ void uart_console_init(void) {
  * Returns 0 if the user closed the window, 1 otherwise.
  */
 static uart_hotkey_cb hotkey_cb = NULL;
+
+/* The serial console starts hidden (EMU_CONSOLE=1 shows it); the video
+ * window's menu shows / hides it. */
+static int console_wanted(void)
+{
+    const char *e = getenv("EMU_CONSOLE");
+    return e && *e == '1';
+}
+
+int uart_console_is_visible(void)
+{
+    return win && (SDL_GetWindowFlags(win) & SDL_WINDOW_SHOWN) && !(SDL_GetWindowFlags(win) & SDL_WINDOW_HIDDEN);
+}
+
+void uart_console_set_visible(int on)
+{
+    if (!win) return;
+    if (on) { SDL_ShowWindow(win); SDL_RaiseWindow(win); }
+    else    SDL_HideWindow(win);
+    extern void video_display_menu_check(int id, int on);
+    video_display_menu_check(1103 /* VM_CONSOLE */, on);
+}
 void uart_console_set_hotkey_cb(uart_hotkey_cb cb) { hotkey_cb = cb; }
 
 int uart_console_update(void) {
@@ -408,8 +431,9 @@ int uart_console_update(void) {
                 extern int g_video_window_closed;
                 extern uint32_t video_display_get_window_id(void);
                 if (e.window.windowID == SDL_GetWindowID(win)) {
-                    /* UART terminal window closed - stop emulator */
-                    return 0;
+                    /* UART terminal closed: only hide it (menu Affichage) */
+                    uart_console_set_visible(0);
+                    continue;
                 }
                 if (e.window.windowID == video_display_get_window_id()) {
                     /* Video display window closed - set flag */

@@ -40,5 +40,7 @@ void slave_hle_set_uart(slave_backend_t *be, uart_inject_fn fn, void *bus);
 void slave_hle_set_disc(slave_backend_t *be, int present, int notify);
 /* 1 once if the CPU asked the 68HC05 for a reset ($8A on $200005) */
 int  slave_hle_take_reset(slave_backend_t *be);
+/* Call once per video frame (pointer: relative mode time-out) */
+void slave_hle_frame(slave_backend_t *be);
 
 #endif /* SLAVE_H */

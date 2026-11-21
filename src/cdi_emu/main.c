@@ -42,8 +42,15 @@ static int hotkey(int fkey)
 {
     if (!g_hotkey_bus) return 0;
     switch (fkey) {
+    case 11:
+        video_display_toggle_fullscreen();
+        return 1;
+    case 8:
+        video_display_toggle_host_cursor();
+        return 1;
     case 7:
         g_swap_buttons = !g_swap_buttons;
+        video_display_menu_check(VM_SWAP, g_swap_buttons);
         fprintf(stderr, "[INPUT] mouse buttons %s (F7)\n", g_swap_buttons ? "SWAPPED" : "normal");
         return 1;
     case 5: bus_save_slot(g_hotkey_bus, g_save_slot); return 1;
@@ -54,6 +61,21 @@ static int hotkey(int fkey)
         return 1;
     }
     return 0;
+}
+
+/* Menu bar of the video window */
+static void menu_action(int id)
+{
+    switch (id) {
+    case VM_QUIT: { SDL_Event q; SDL_zero(q); q.type = SDL_QUIT; SDL_PushEvent(&q); break; }
+    case VM_SAVE:        hotkey(5); break;
+    case VM_LOAD:        hotkey(9); break;
+    case VM_NEXT_SLOT:   hotkey(6); break;
+    case VM_FULLSCREEN:  video_display_toggle_fullscreen(); break;
+    case VM_HOST_CURSOR: video_display_toggle_host_cursor(); break;
+    case VM_CONSOLE:     uart_console_set_visible(!uart_console_is_visible()); break;
+    case VM_SWAP:        hotkey(7); break;
+    }
 }
 
 /* Input recording / replay (deterministic tests):
@@ -137,6 +159,7 @@ int main(int argc, char* argv[]) {
 
     printf("=== CD-I 205 Emulator ===\n");
     SDL_SetMainReady();
+    SDL_SetHint(SDL_HINT_TIMER_RESOLUTION, "1");   /* 1 ms sleeps on Windows */
 
 #ifdef _WIN32
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -196,8 +219,11 @@ int main(int argc, char* argv[]) {
     /* Open the SDL2 UART terminal window */
     uart_console_init();
 
-    /* Open the SDL2 video display window */
+    /* Open the SDL2 video display window (with its menu bar) */
     video_display_init();
+    video_display_set_menu_cb(menu_action);
+    video_display_menu_check(VM_SWAP, g_swap_buttons);
+    video_display_menu_check(VM_CONSOLE, uart_console_is_visible());
 
     /* Host sound: CD-i ADPCM decoded by the CDIC */
     audio_out_init();                    /* no device: audio_out_push still dumps */
@@ -248,7 +274,6 @@ int main(int argc, char* argv[]) {
             play_next();
         }
     }
-    int update_counter = 0;
     long pc_poll = getenv("EMU_PC_POLL") ? atol(getenv("EMU_PC_POLL")) : 0;
     /* EMU_BREAK=hex: print the last 64 PCs (and registers) when PC reaches it */
     /* several addresses: EMU_BREAK=1A96D0,1A9706 (each prints up to 4 hits) */
@@ -276,7 +301,11 @@ int main(int argc, char* argv[]) {
     /* Real-time pacing: emulated time (CPU cycles / 15 MHz) follows the host
      * clock. EMU_SPEED = percent of real speed (default 100, 0 = unlimited). */
     int speed = getenv("EMU_SPEED") ? atoi(getenv("EMU_SPEED")) : 100;
-    uint64_t pace_cycles0 = 0, pace_ms0 = SDL_GetTicks64();
+    uint64_t pace_cycles0 = 0, pace_t0 = SDL_GetPerformanceCounter();
+    /* EMU_PACE_LOG=1: histogram of the host time between two frames */
+    int pace_log = getenv("EMU_PACE_LOG") != NULL;
+    long pace_hist[8] = {0};
+    uint64_t pace_last = 0;
     int os9_log = getenv("EMU_OS9_LOG") && *getenv("EMU_OS9_LOG") && *getenv("EMU_OS9_LOG") != '0';
     int ring_pos = 0;
 
@@ -363,7 +392,8 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "[PCPOLL] i=%ld PC=%08X A7=%08X\n", i, cpu.pc, cpu.a[7]);
 
         /* Advance video timing by the consumed cycles */
-        if (scc66470_tick(video, cycles))   scc66470_vretrace(video,   bus->dram, (uint32_t)sizeof(bus->dram));
+        int new_frame = scc66470_tick(video, cycles);
+        if (new_frame) scc66470_vretrace(video, bus->dram, (uint32_t)sizeof(bus->dram));
         if (scc66470_tick(video_b, cycles)) scc66470_vretrace(video_b, bus->dram, (uint32_t)sizeof(bus->dram));
 
         /* On-chip timer, then present the highest pending interrupt:
@@ -405,40 +435,64 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        /* Poll SDL events and update displays every 20000 instructions (~60 Hz) */
-        if (++update_counter >= 20000) {
-            update_counter = 0;
+        /* Once per video frame (master VSC vertical retrace, 50 Hz): poll SDL
+         * events, present the picture, then pace to real time. Doing it per
+         * frame (and not every N instructions) avoids presenting twice per
+         * frame and sleeping in uneven chunks, which made video/audio stutter. */
+        if (new_frame) {
             running = uart_console_update();
             bus_nvram_poll(bus);              /* autosave game saves / clock */
-            if (speed > 0) {
-                uint64_t emu_ms = (rtc_virtual_cycles - pace_cycles0) * 100u / (15000u * (uint64_t)speed);
-                uint64_t host_ms = SDL_GetTicks64() - pace_ms0;
-                if (emu_ms > host_ms + 1)
-                    SDL_Delay((Uint32)(emu_ms - host_ms));
-                else if (host_ms > emu_ms + 250) {      /* too slow: do not try to catch up */
-                    pace_cycles0 = rtc_virtual_cycles;
-                    pace_ms0 = SDL_GetTicks64();
+            slave_hle_frame(be);
+            if (pace_log) {
+                uint64_t now = SDL_GetPerformanceCounter();
+                if (pace_last) {
+                    double ms = (double)(now - pace_last) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+                    int k = ms < 15 ? 0 : ms < 19 ? 1 : ms < 21 ? 2 : ms < 25 ? 3 : ms < 35 ? 4 : ms < 60 ? 5 : 6;
+                    pace_hist[k]++;
                 }
+                pace_last = now;
             }
             if (running)
                 running = video_display_update(video, bus);
+            if (speed > 0) {
+                /* emulated time (cycles / 15 MHz) vs host high-resolution clock */
+                uint64_t freq = SDL_GetPerformanceFrequency();
+                uint64_t emu_t  = (rtc_virtual_cycles - pace_cycles0) * freq / 150000u / (uint64_t)speed;
+                uint64_t host_t = SDL_GetPerformanceCounter() - pace_t0;
+                if (emu_t > host_t) {
+                    uint64_t wait = emu_t - host_t;
+                    uint64_t ms = wait * 1000u / freq;
+                    if (ms > 1) SDL_Delay((Uint32)(ms - 1));          /* coarse sleep */
+                    while (SDL_GetPerformanceCounter() - pace_t0 < emu_t) { }   /* fine wait (<1 ms) */
+                } else if (host_t - emu_t > freq / 4) {               /* >250 ms late: resync */
+                    pace_cycles0 = rtc_virtual_cycles;
+                    pace_t0 = SDL_GetPerformanceCounter();
+                }
+            }
         }
 
         i++;
     }
 
     fflush(stdout);
+    if (pace_log)
+        fprintf(stderr, "[PACE] frame intervals: <15ms %ld | 15-19 %ld | 19-21 %ld | 21-25 %ld | 25-35 %ld | 35-60 %ld | >60 %ld\n",
+                pace_hist[0], pace_hist[1], pace_hist[2], pace_hist[3], pace_hist[4], pace_hist[5], pace_hist[6]);
 
-    fprintf(stderr, "[MAIN] CPU loop finished (traced=%ld), keeping window open.\n", traced);
-    fprintf(stderr, "[MAIN] Close with the window's X button.\n");
-
-    /* Keep the window alive after the CPU loop exits */
-    int win_alive = getenv("EMU_TRACE_MAX") ? 0 : 1;
+    /* Closing the video window (or Fichier > Quitter) ends the emulator.
+     * If the CPU stopped by itself (halt), keep the windows open to read
+     * the console, until the user closes them. */
+    int win_alive = (running && !getenv("EMU_TRACE_MAX")) ? 1 : 0;
+    if (win_alive) {
+        fprintf(stderr, "[MAIN] CPU loop finished (traced=%ld), keeping window open.\n", traced);
+        uart_console_set_visible(1);
+    }
     while (win_alive) {
         win_alive = uart_console_update();
         SDL_Delay(16);  /* ~60 fps idle */
     }
 
+    video_display_restore_host_cursor();
     audio_out_close();
     bus_destroy(bus);
     printf("\nEmulation stopped\n");

@@ -19,14 +19,21 @@
 #include "../bus.h"
 
 #include <SDL2/SDL.h>
+#ifdef _WIN32
+#include <SDL2/SDL_syswm.h>
+#include <windows.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define WIN_W   SCC_OUT_MAX_W          /* 768: one pixel per 4-bit pixel   */
-#define WIN_H   (SCC_OUT_MAX_H * 2)    /* 560: lines doubled for the aspect */
+/* The picture is drawn on a 4:3 logical surface; SDL letterboxes it in any
+ * window size or in full screen, and converts mouse coordinates to it. */
+#define WIN_W   768
+#define WIN_H   576
 
 int g_video_window_closed = 0;
+static void create_menu(void);
 
 static SDL_Window   *win = NULL;
 static SDL_Renderer *ren = NULL;
@@ -59,7 +66,7 @@ void video_display_init(void)
 
     win = SDL_CreateWindow("CD-i 205 - Video Output",
                            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                           WIN_W, WIN_H, SDL_WINDOW_SHOWN);
+                           WIN_W, WIN_H, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     if (!win) {
         fprintf(stderr, "[video_display] SDL_CreateWindow error: %s\n", SDL_GetError());
         return;
@@ -74,6 +81,7 @@ void video_display_init(void)
     }
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
+    SDL_RenderSetLogicalSize(ren, WIN_W, WIN_H);       /* 4:3, black borders */
 
     tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
                             SCC_OUT_MAX_W, SCC_OUT_MAX_H);
@@ -91,6 +99,7 @@ void video_display_init(void)
 
     vsd_reset(&vsd);
     window_id = SDL_GetWindowID(win);
+    create_menu();
     initialized = 1;
     fprintf(stderr, "[video_display] Window created (ID=%u, %dx%d)\n", window_id, WIN_W, WIN_H);
 }
@@ -122,16 +131,98 @@ static void pointer_report(void)
     if (pointer_cb) pointer_cb(pointer_ctx, ptr_x, ptr_y, ptr_buttons);
 }
 
-/* Window pixel -> pointer units, as measured against the shell's cursor:
- * X in 4-bit-pixel columns (0..width-1), Y in half display lines
- * (0..2*lines-1, the shell halves it). */
-static void window_to_pointer(int wx, int wy)
+/* Logical (4:3) coordinates -> pointer units, measured against the CD-i
+ * shell cursor (pointer driver scaling, $1B081A): the cursor column equals
+ * the pointer X (4-bit-pixel columns of the frame), and the cursor line is
+ * pointer Y * 240 / 560 -- the Y range 0..559 spans the whole picture. So
+ * the CD-i cursor's top-left corner lands under the PC mouse. */
+static void window_to_pointer(int lx, int ly)
 {
-    int ww = WIN_W, wh = WIN_H;
-    if (win) SDL_GetWindowSize(win, &ww, &wh);
-    if (ww <= 0 || wh <= 0) return;
-    ptr_x = wx * frame_w / ww;
-    ptr_y = wy * frame_h * 2 / wh;
+    if (lx < 0) lx = 0;
+    if (ly < 0) ly = 0;
+    if (lx >= WIN_W) lx = WIN_W - 1;
+    if (ly >= WIN_H) ly = WIN_H - 1;
+    ptr_x = lx * frame_w / WIN_W;
+    ptr_y = ly * 560 / WIN_H;
+}
+
+/* ===== Menu bar (Windows: native menu on the video window) ===== */
+static video_menu_cb menu_cb = NULL;
+#ifdef _WIN32
+static HMENU menu_bar = NULL;
+#endif
+
+void video_display_set_menu_cb(video_menu_cb cb) { menu_cb = cb; }
+
+void video_display_menu_check(int id, int on)
+{
+#ifdef _WIN32
+    if (menu_bar) CheckMenuItem(menu_bar, (UINT)id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+#else
+    (void)id; (void)on;
+#endif
+}
+
+static void create_menu(void)
+{
+#ifdef _WIN32
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    if (!SDL_GetWindowWMInfo(win, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
+    HWND hwnd = info.info.win.window;
+    HMENU file = CreatePopupMenu(), view = CreatePopupMenu(), ctl = CreatePopupMenu();
+    AppendMenuW(file, MF_STRING, VM_SAVE,      L"Sauvegarder l'\u00e9tat\tF5");
+    AppendMenuW(file, MF_STRING, VM_LOAD,      L"Rappeler l'\u00e9tat\tF9");
+    AppendMenuW(file, MF_STRING, VM_NEXT_SLOT, L"Slot suivant\tF6");
+    AppendMenuW(file, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(file, MF_STRING, VM_QUIT,      L"Quitter");
+    AppendMenuW(view, MF_STRING, VM_FULLSCREEN, L"Plein \u00e9cran\tF11");
+    AppendMenuW(view, MF_STRING, VM_HOST_CURSOR, L"Souris du PC visible\tF8");
+    AppendMenuW(view, MF_STRING, VM_CONSOLE,   L"Console s\u00e9rie (UART)");
+    AppendMenuW(ctl,  MF_STRING, VM_SWAP,      L"Inverser clic gauche / droit\tF7");
+    menu_bar = CreateMenu();
+    AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)file, L"Fichier");
+    AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)view, L"Affichage");
+    AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)ctl,  L"Contr\u00f4les");
+    SetMenu(hwnd, menu_bar);
+    SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
+    SDL_SetWindowSize(win, WIN_W, WIN_H);        /* keep the 4:3 client area */
+#endif
+}
+
+/* PC mouse cursor hidden while over the video window (only the CD-i
+ * cursor is shown); F8 toggles it, e.g. to check that both coincide. */
+static int hide_host_cursor = 1, mouse_inside = 0;
+
+static void apply_host_cursor(void)
+{
+    SDL_ShowCursor((hide_host_cursor && mouse_inside) ? SDL_DISABLE : SDL_ENABLE);
+}
+
+/* Always give the PC cursor back (called when the emulator exits) */
+void video_display_restore_host_cursor(void)
+{
+    mouse_inside = 0;
+    SDL_ShowCursor(SDL_ENABLE);
+}
+
+void video_display_toggle_host_cursor(void)
+{
+    hide_host_cursor = !hide_host_cursor;
+    apply_host_cursor();
+    video_display_menu_check(VM_HOST_CURSOR, !hide_host_cursor);
+    fprintf(stderr, "[video_display] PC mouse cursor %s over the video\n",
+            hide_host_cursor ? "hidden" : "shown");
+}
+
+/* F11 / Alt+Enter: window <-> full screen (desktop resolution, 4:3 kept) */
+void video_display_toggle_fullscreen(void)
+{
+    if (!win) return;
+    int fs = (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+    SDL_SetWindowFullscreen(win, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+    video_display_menu_check(VM_FULLSCREEN, !fs);
+    fprintf(stderr, "[video_display] %s\n", fs ? "windowed" : "full screen");
 }
 
 int video_display_handle_event(const void *ev)
@@ -140,6 +231,26 @@ int video_display_handle_event(const void *ev)
     if (!initialized) return 0;
 
     switch (e->type) {
+#ifdef _WIN32
+    case SDL_SYSWMEVENT: {
+        const SDL_SysWMmsg *m = e->syswm.msg;
+        if (m && m->subsystem == SDL_SYSWM_WINDOWS && m->msg.win.msg == WM_COMMAND &&
+            HIWORD(m->msg.win.wParam) == 0 && menu_cb) {
+            menu_cb((int)LOWORD(m->msg.win.wParam));
+            return 1;
+        }
+        return 0;
+    }
+#endif
+    case SDL_WINDOWEVENT:
+        if (e->window.windowID != window_id) return 0;
+        if (e->window.event == SDL_WINDOWEVENT_ENTER) { mouse_inside = 1; apply_host_cursor(); }
+        if (e->window.event == SDL_WINDOWEVENT_LEAVE || e->window.event == SDL_WINDOWEVENT_FOCUS_LOST ||
+            e->window.event == SDL_WINDOWEVENT_HIDDEN || e->window.event == SDL_WINDOWEVENT_CLOSE) {
+            mouse_inside = 0;           /* never leave the PC cursor hidden elsewhere */
+            apply_host_cursor();
+        }
+        return 0;                       /* let the console handle close, etc. */
     case SDL_MOUSEMOTION:
         if (e->motion.windowID != window_id) return 0;
         window_to_pointer(e->motion.x, e->motion.y);
@@ -160,6 +271,11 @@ int video_display_handle_event(const void *ev)
     case SDL_KEYUP: {
         if (e->key.windowID != window_id) return 0;
         int down = (e->type == SDL_KEYDOWN);
+        if (down && !e->key.repeat && (e->key.keysym.sym == SDLK_RETURN || e->key.keysym.sym == SDLK_KP_ENTER)
+            && (SDL_GetModState() & KMOD_ALT)) {
+            video_display_toggle_fullscreen();
+            return 1;
+        }
         /* Arrows: one impulse per key press / auto-repeat (relative move,
          * as a CD-i thumbstick): EMU_IMPULSE units, x3 with Shift */
         static int impulse = 0;
@@ -364,7 +480,7 @@ int video_display_update(void *scc66470, void *bus)
     SDL_UpdateTexture(tex, NULL, pixels, SCC_OUT_MAX_W * (int)sizeof(uint32_t));
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
-    SDL_RenderCopy(ren, tex, &src_rect, NULL);
+    SDL_RenderCopy(ren, tex, &src_rect, NULL);    /* stretched to the 4:3 surface */
     SDL_RenderPresent(ren);
     return 1;
 }

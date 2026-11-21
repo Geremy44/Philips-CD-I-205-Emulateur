@@ -33,9 +33,11 @@
  * The driver stores that position as the current one and only signals the
  * application when a later packet differs. Games that read the pointer as
  * a joystick (Asterix character selection) re-center it every frame
- * ("C7 35 00" = 384,327) and use the displacement. So the HLE moves its
- * position by the host mouse *movement* (from the last position set), and
- * also accepts relative "impulses" (arrow keys).
+ * ("C7 35 00" = 384,327) and use the displacement. So while the driver
+ * keeps setting the position (last one < 0.5 s ago) the HLE moves it by
+ * the host mouse *movement*; otherwise the pointer follows the host mouse
+ * position (absolute), so the CD-i cursor stays under the PC mouse.
+ * Relative "impulses" (arrow keys) are always added.
  *
  * Channel 3 also carries the CD drive messages of cdapdriv (4 bytes,
  * IRQ handler $1AC04C reading $200007):
@@ -78,6 +80,7 @@ typedef struct {
     int     mx, my, have_mouse;
     uint8_t sp[3];              /* set-position command being received */
     int     sp_n;
+    int     rel_frames;         /* >0: the driver set the position recently */
 
     /* CD drive: multi-byte command on channel 3 */
     int     disc;               /* 1 = disc in the drive */
@@ -174,6 +177,7 @@ static void hle_write8(void *ctx, uint32_t addr, uint8_t val)
                 c->py = ((c->sp[1] & 0x0F) << 6) | (c->sp[0] & 0x3F);
                 c->px = ((c->sp[1] & 0x70) << 3) | (c->sp[2] & 0x7F);
                 c->sp_n = 0;
+                c->rel_frames = 25;              /* relative mode for 0.5 s */
                 if (c->log) fprintf(stderr, "[SLAVE] pointer set to %d,%d\n", c->px, c->py);
             }
         }
@@ -220,7 +224,7 @@ static void hle_push_input(void *ctx, const uint8_t *rep, int len)
     if (rep[0] == 1) {                       /* host mouse, absolute: use its movement */
         int hx = ((rep[1] << 8) | rep[2]) & 0x3FF;
         int hy = ((rep[3] << 8) | rep[4]) & 0x3FF;
-        if (!c->have_mouse) { x = hx; y = hy; c->have_mouse = 1; }
+        if (!c->have_mouse || c->rel_frames <= 0) { x = hx; y = hy; c->have_mouse = 1; }
         else { x = c->px + (hx - c->mx); y = c->py + (hy - c->my); }
         c->mx = hx; c->my = hy;
     } else {                                 /* impulse: signed dx, dy */
@@ -283,6 +287,12 @@ int slave_hle_take_reset(slave_backend_t *be)
     int r = c->reset_req;
     c->reset_req = 0;
     return r;
+}
+
+void slave_hle_frame(slave_backend_t *be)
+{
+    hle_ctx_t *c = be->ctx;
+    if (c->rel_frames > 0) c->rel_frames--;
 }
 
 void slave_hle_set_uart(slave_backend_t *be, uart_inject_fn fn, void *bus)
