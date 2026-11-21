@@ -29,6 +29,10 @@
 #include "core/os9trace.h"
 #include "core/audio_out.h"
 #include "core/rtc_m48t08.h"
+#include "core/CDIC/cdrom_win.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* ---- Save / recall hotkeys (NVRAM + clock) ----
  *   F5 = save to the current slot, F9 = recall it, F6 = next slot (1..9) */
@@ -50,6 +54,7 @@ static int hotkey(int fkey)
         return 1;
     case 7:
         g_swap_buttons = !g_swap_buttons;
+        video_display_set_swap(g_swap_buttons);
         video_display_menu_check(VM_SWAP, g_swap_buttons);
         fprintf(stderr, "[INPUT] mouse buttons %s (F7)\n", g_swap_buttons ? "SWAPPED" : "normal");
         return 1;
@@ -71,6 +76,7 @@ static int   g_play_disc_ok = -1;        /* -1 none pending, 0 cancelled, 1 path
 
 /* Disc changes: the shell's OPEN button, the File menu */
 static cdic_t          *g_cdic = NULL;
+static int              g_reset_request = 0;  /* File > Reset (Ctrl+R) */
 static slave_backend_t *g_be   = NULL;
 
 /* Ask for an image and insert it; the door ends closed (with the disc if
@@ -99,18 +105,111 @@ static void insert_disc_dialog(int close_empty)
     }
 }
 
+/* Folder for ripped discs: "CDI-205/Games" found above the executable
+ * (development tree), else "Games" next to it (portable build) */
+static void games_dir(char *out, int n)
+{
+    char *base = SDL_GetBasePath();
+    char dir[1100];
+    snprintf(dir, sizeof(dir), "%s", base ? base : ".\\");
+    SDL_free(base);
+    for (int up = 0; up < 6; up++) {
+        char probe[1200];
+        snprintf(probe, sizeof(probe), "%sCDI-205\\Games", dir);
+        wchar_t w[1200];
+        if (MultiByteToWideChar(CP_UTF8, 0, probe, -1, w, 1200) > 0) {
+            DWORD a = GetFileAttributesW(w);
+            if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) { snprintf(out, n, "%s", probe); return; }
+        }
+        size_t l = strlen(dir);                     /* parent folder */
+        if (l < 2) break;
+        dir[l - 1] = 0;
+        char *sl = strrchr(dir, '\\');
+        if (!sl) break;
+        sl[1] = 0;
+    }
+    base = SDL_GetBasePath();
+    snprintf(out, n, "%sGames", base ? base : ".\\");
+    SDL_free(base);
+}
+
+/* Insert the disc of a PC drive ("cdrom:F") */
+static void insert_drive(char letter)
+{
+    char path[16];
+    snprintf(path, sizeof(path), "cdrom:%c", letter);
+    cdic_eject(g_cdic);
+    slave_hle_set_tray(g_be, 1, 0);
+    if (cdic_insert(g_cdic, path) == 0) {
+        fprintf(stderr, "[DISC] inserted the disc of drive %c:\n", letter);
+        slave_hle_set_tray(g_be, 0, cdic_disc_kind(g_cdic));
+    } else {
+        slave_hle_set_tray(g_be, 0, 0);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Pas de disque lisible dans le lecteur %c:", letter);
+        video_display_message("Lecteur CD", msg);
+    }
+}
+
+/* Ripping a drive: progress in the window title, result in a box */
+static void rip_poll(void)
+{
+    static int last = -2;
+    int done = 0;
+    char msg[1300];
+    int p = cdrom_rip_progress(&done, msg, sizeof(msg));
+    if (p < 0) return;
+    if (done) {
+        if (last != -3) {
+            video_display_set_title(NULL);
+            char text[1400];
+            if (strstr(msg, ".cue") && !strstr(msg, "Impossible") && !strstr(msg, "Pas de disque"))
+                snprintf(text, sizeof(text), "Disque extrait :\n%s\n\nIl s'ouvre avec Fichier > Ouvrir un disque.", msg);
+            else
+                snprintf(text, sizeof(text), "%s", msg);
+            fprintf(stderr, "[RIP] %s\n", msg);
+            video_display_message("Extraction du disque", text);
+            last = -3;
+        }
+        return;
+    }
+    if (p != last) {
+        char title[96];
+        snprintf(title, sizeof(title), "CD-i 205 - Extraction du disque : %d %%", p);
+        video_display_set_title(title);
+        last = p;
+    }
+}
+
 /* Menu bar of the video window */
 static void menu_action(int id)
 {
-    if (g_rec && (id == VM_OPEN_DISC || id == VM_EJECT)) {   /* replayed at this step */
-        fprintf(g_rec, "# menu %lld %d\n", g_step, id);
+    if (g_rec && (id == VM_OPEN_DISC || id == VM_EJECT || id == VM_RESET ||
+                  (id >= VM_DRIVE_PLAY && id < VM_DRIVE_PLAY + 26))) {   /* replayed at this step */
+        /* (a reset requested from the frame block happens at the next step) */
+        fprintf(g_rec, "# menu %lld %d\n", g_step + (id == VM_RESET ? 1 : 0), id);
         fflush(g_rec);
+    }
+    if (id >= VM_DRIVE_PLAY && id < VM_DRIVE_PLAY + 26) { insert_drive((char)('A' + id - VM_DRIVE_PLAY)); return; }
+    if (id >= VM_DRIVE_RIP && id < VM_DRIVE_RIP + 26) {
+        char dir[1200], letter = (char)('A' + id - VM_DRIVE_RIP);
+        games_dir(dir, sizeof(dir));
+        if (cdrom_rip_start(letter, dir) == 0) {
+            fprintf(stderr, "[RIP] drive %c: -> %s\n", letter, dir);
+            video_display_set_title("CD-i 205 - Extraction du disque : 0 %");
+        } else {
+            video_display_message("Extraction du disque", "Une extraction est d\xC3\xA9j\xC3\xA0 en cours.");
+        }
+        return;
     }
     switch (id) {
     case VM_OPEN_DISC:                                  /* change disc at any time */
         cdic_eject(g_cdic);
         slave_hle_set_tray(g_be, 1, 0);                 /* door open: CD-RTOS forgets the disc */
         insert_disc_dialog(1);
+        break;
+    case VM_RESET:                                      /* reset button: warm reboot */
+        g_reset_request = 1;
         break;
     case VM_EJECT:
         cdic_eject(g_cdic);
@@ -149,8 +248,7 @@ static void push_pointer(void *ctx, int x, int y, int buttons)
 static void pointer_event(void *ctx, int x, int y, int buttons)
 {
     if (g_play) return;                          /* replay in progress */
-    if (g_swap_buttons)                          /* left <-> right */
-        buttons = (buttons & ~3) | ((buttons & 1) << 1) | ((buttons >> 1) & 1);
+    /* (the left / right swap is applied to the mouse in video_display) */
     if (g_rec) { fprintf(g_rec, "%lld %d %d %d\n", g_step, x, y, buttons); fflush(g_rec); }
     push_pointer(ctx, x, y, buttons);
 }
@@ -292,6 +390,7 @@ int main(int argc, char* argv[]) {
     /* Open the SDL2 video display window (with its menu bar) */
     video_display_init();
     video_display_set_menu_cb(menu_action);
+    video_display_set_swap(g_swap_buttons);
     video_display_menu_check(VM_SWAP, g_swap_buttons);
     video_display_menu_check(VM_CONSOLE, uart_console_is_visible());
 
@@ -519,11 +618,20 @@ int main(int argc, char* argv[]) {
         }
 
         /* 68HC05 reset request ($8A): warm reboot, the DRAM and the disc stay */
-        if (slave_hle_take_reset(be)) {
+        static long long force_reset = -2;            /* EMU_FORCE_RESET=step (tests) */
+        if (force_reset == -2) force_reset = getenv("EMU_FORCE_RESET") ? atoll(getenv("EMU_FORCE_RESET")) : -1;
+        if (slave_hle_take_reset(be) || i == force_reset || g_reset_request) {
+            g_reset_request = 0;
             fprintf(stderr, "[RESET] 68HC05 resets the 68070 (warm reboot) at step %lld\n", i);
             onchip68070_reset(onchip);
-            scc66470_init(video);
-            scc66470_init(video_b);
+            {   /* the chips keep their wiring: the slave's ICA is at $80400 */
+                uint32_t ica_a = video->ica_pointer, ica_b = video_b->ica_pointer;
+                scc66470_init(video);
+                scc66470_init(video_b);
+                video->ica_pointer = ica_a;
+                video_b->ica_pointer = ica_b;
+            }
+            video_display_reset_vsd();            /* V.S.D. too (palette, weights) */
             cdic_init(cdic);
             if (be->reset) be->reset(be->ctx);
             m68k_reset(&cpu);
@@ -546,6 +654,7 @@ int main(int argc, char* argv[]) {
             bus_nvram_poll(bus);              /* autosave game saves / clock */
             slave_hle_frame(be);
             fflush(stderr);                   /* logs survive a killed process */
+            rip_poll();                       /* disc ripping in progress */
             {   /* PC mouse captured while the game recentres the cursor */
                 int cx, cy;
                 int rel = slave_hle_pointer_relative(be, &cx, &cy);

@@ -59,15 +59,28 @@ void video_display_toggle_host_cursor(void);
  * sent as impulses. cdi_x / cdi_y = CD-i cursor (pointer units), where
  * the PC mouse is put back when the capture ends. */
 void video_display_pointer_mode(int relative, int cdi_x, int cdi_y);
+
+/* Mouse buttons: 1 = left click is CD-i button 2 (F7). Keys and
+ * controllers follow their own assignment (Controles menu). */
+void video_display_set_swap(int swap);
+
+/* Reset the V.S.D. (palette, coding, weights...) like the hardware reset */
+void video_display_reset_vsd(void);
+
+/* Window title (NULL = the normal one) and a message box */
+void video_display_set_title(const char *title);
+void video_display_message(const char *title, const char *text);
 /* Show the PC cursor again (on exit) */
 void video_display_restore_host_cursor(void);
 
 /* Menu bar of the video window (native on Windows). The callback gets the
  * command id; video_display_menu_check() sets an item's check mark. */
 enum {
-    VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT,
+    VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT, VM_RESET,
     VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
-    VM_SWAP = 1201
+    VM_SWAP = 1201, VM_INPUT_CONFIG, VM_MOUSE,
+    VM_DRIVE_PLAY = 1300,    /* + drive letter - 'A': play the disc in it */
+    VM_DRIVE_RIP  = 1330     /* + drive letter - 'A': rip it to .bin / .cue */
 };
 typedef void (*video_menu_cb)(int id);
 void video_display_set_menu_cb(video_menu_cb cb);

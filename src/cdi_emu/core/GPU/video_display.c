@@ -16,6 +16,10 @@
 #include "video_display.h"
 #include "scc66470.h"
 #include "vsd.h"
+#include "input_ui.h"
+#include "../input_map.h"
+#include "../CDIC/cdrom_win.h"
+#include <wchar.h>
 #include "../bus.h"
 
 #include <SDL2/SDL.h>
@@ -102,6 +106,8 @@ void video_display_init(void)
     vsd_reset(&vsd);
     window_id = SDL_GetWindowID(win);
     create_menu();
+    input_map_init();                          /* keys / controllers, controles.ini */
+    video_display_menu_check(VM_MOUSE, input_map_mouse_enabled());
     initialized = 1;
     fprintf(stderr, "[video_display] Window created (ID=%u, %dx%d)\n", window_id, WIN_W, WIN_H);
 }
@@ -115,7 +121,29 @@ uint32_t video_display_get_window_id(void)
 
 static video_pointer_cb pointer_cb = NULL;
 static void            *pointer_ctx = NULL;
-static int ptr_x = 384, ptr_y = 240, ptr_buttons = 0;
+static int ptr_x = 384, ptr_y = 240, ptr_buttons = 0;   /* ptr_buttons: mouse */
+static int pad_buttons = 0;          /* buttons held on the keyboard / controllers */
+static int swap_mouse = 0;           /* left click = CD-i button 2 (F7) */
+
+void video_display_set_swap(int swap) { swap_mouse = swap != 0; }
+
+/* Hardware reset of the V.S.D. (warm reboot: quitting a disc). Without it
+ * the shell inherited the game's last state - e.g. contribution factors
+ * left at 0 by a fade to black - and only the backdrop colour showed. */
+void video_display_reset_vsd(void) { vsd_reset(&vsd); }
+
+void video_display_set_title(const char *title)
+{
+    if (win) SDL_SetWindowTitle(win, title ? title : "CD-i 205 - Video Output");
+}
+
+void video_display_message(const char *title, const char *text)
+{
+    if (win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP))
+        video_display_toggle_fullscreen();       /* the box must be visible */
+    SDL_ShowCursor(SDL_ENABLE);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, title, text, win);
+}
 static int frame_w = SCC_OUT_MAX_W, frame_h = 240;   /* last displayed geometry */
 
 void video_display_set_pointer_cb(video_pointer_cb cb, void *ctx)
@@ -130,7 +158,7 @@ static void pointer_report(void)
     if (ptr_y < 0) ptr_y = 0;
     if (ptr_x > 1023) ptr_x = 1023;
     if (ptr_y > 1023) ptr_y = 1023;
-    if (pointer_cb) pointer_cb(pointer_ctx, ptr_x, ptr_y, ptr_buttons);
+    if (pointer_cb) pointer_cb(pointer_ctx, ptr_x, ptr_y, ptr_buttons | pad_buttons);
 }
 
 /* Logical (4:3) coordinates -> pointer units, measured against the CD-i
@@ -175,6 +203,19 @@ static void create_menu(void)
     HMENU file = CreatePopupMenu(), view = CreatePopupMenu(), ctl = CreatePopupMenu();
     AppendMenuW(file, MF_STRING, VM_OPEN_DISC, L"Ouvrir un disque...\tCtrl+O");
     AppendMenuW(file, MF_STRING, VM_EJECT,     L"\u00c9jecter le disque");
+    AppendMenuW(file, MF_STRING, VM_RESET,     L"R\u00e9initialiser le CD-i\tCtrl+R");
+    {   /* every CD / DVD / BD drive of the PC */
+        char drives[26];
+        int nd = cdrom_list_drives(drives, 26);
+        if (nd) AppendMenuW(file, MF_SEPARATOR, 0, NULL);
+        for (int i = 0; i < nd; i++) {
+            wchar_t label[96];
+            swprintf(label, 96, L"Jouer le disque du lecteur %c:", drives[i]);
+            AppendMenuW(file, MF_STRING, VM_DRIVE_PLAY + (drives[i] - 'A'), label);
+            swprintf(label, 96, L"Extraire le disque du lecteur %c: en BIN/CUE...", drives[i]);
+            AppendMenuW(file, MF_STRING, VM_DRIVE_RIP + (drives[i] - 'A'), label);
+        }
+    }
     AppendMenuW(file, MF_SEPARATOR, 0, NULL);
     AppendMenuW(file, MF_STRING, VM_SAVE,      L"Sauvegarder l'\u00e9tat\tF5");
     AppendMenuW(file, MF_STRING, VM_LOAD,      L"Rappeler l'\u00e9tat\tF9");
@@ -184,6 +225,9 @@ static void create_menu(void)
     AppendMenuW(view, MF_STRING, VM_FULLSCREEN, L"Plein \u00e9cran\tF11");
     AppendMenuW(view, MF_STRING, VM_HOST_CURSOR, L"Souris du PC visible\tF8");
     AppendMenuW(view, MF_STRING, VM_CONSOLE,   L"Console s\u00e9rie (UART)");
+    AppendMenuW(ctl,  MF_STRING, VM_INPUT_CONFIG, L"Assigner les touches...");
+    AppendMenuW(ctl,  MF_STRING, VM_MOUSE,     L"Souris active");
+    AppendMenuW(ctl,  MF_SEPARATOR, 0, NULL);
     AppendMenuW(ctl,  MF_STRING, VM_SWAP,      L"Inverser clic gauche / droit\tF7");
     menu_bar = CreateMenu();
     AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)file, L"Fichier");
@@ -215,25 +259,34 @@ void video_display_restore_host_cursor(void)
 /* ===== Mouse capture while the game recentres the CD-i cursor =====
  * Games that read the pointer as relative movement put the CD-i cursor
  * back in place all the time; the PC mouse then wandered out of the
- * window. While the 68HC05 is in that mode, SDL's relative mouse mode
- * keeps the PC mouse in the window and its moves are sent as impulses.
- * Released ~2 s after the game stops recentring (menus, shell), with the
- * PC mouse put back under the CD-i cursor; F8 or leaving the window
- * (Alt+Tab) also releases it. */
+ * window. While the 68HC05 is in that mode the moves are sent as
+ * impulses, and the (hidden) PC mouse is put back in the middle when it
+ * nears the left / right / bottom edge, so it stays in the window. Not
+ * the top edge: pushing the mouse up there releases it, to reach the menu
+ * bar; a click in the picture captures it again. Also released ~2 s after
+ * the game stops recentring (menus, shell), with the PC mouse put back
+ * under the CD-i cursor; F8 or leaving the window (Alt+Tab) release it. */
 static int capture = 0, capture_idle = 0, cap_acc_x = 0, cap_acc_y = 0;
+static int capture_suspended = 0;    /* left by the top edge, until a click */
+static int warp_pending = 0;         /* skip the motion caused by our warp */
+
+#define CAP_MARGIN 48                /* logical pixels from an edge */
+
+static void warp_logical(float lx, float ly)
+{
+    int wx, wy;
+    SDL_RenderLogicalToWindow(ren, lx, ly, &wx, &wy);
+    SDL_WarpMouseInWindow(win, wx, wy);
+}
 
 static void capture_set(int on, int cdi_x, int cdi_y)
 {
     if (on == capture) return;
     capture = on;
     cap_acc_x = cap_acc_y = 0;
-    SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+    warp_pending = 0;
     if (!on && win && ren) {                     /* PC mouse under the CD-i cursor */
-        float lx = (float)cdi_x * WIN_W / (frame_w ? frame_w : WIN_W);
-        float ly = (float)cdi_y * WIN_H / 560.0f;
-        int wx, wy;
-        SDL_RenderLogicalToWindow(ren, lx, ly, &wx, &wy);
-        SDL_WarpMouseInWindow(win, wx, wy);
+        warp_logical((float)cdi_x * WIN_W / (frame_w ? frame_w : WIN_W), (float)cdi_y * WIN_H / 560.0f);
     }
     apply_host_cursor();
 }
@@ -243,10 +296,13 @@ void video_display_pointer_mode(int relative, int cdi_x, int cdi_y)
     static int headless = -1;
     if (headless < 0) headless = getenv("EMU_HEADLESS") != NULL;
     int focused = win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS);
-    if (headless || !focused || !hide_host_cursor) { capture_set(0, cdi_x, cdi_y); return; }
+    if (headless || !focused || !hide_host_cursor || input_ui_is_open() || !input_map_mouse_enabled()) {
+        capture_set(0, cdi_x, cdi_y);
+        return;
+    }
     if (relative) {
         capture_idle = 0;
-        if (mouse_inside) capture_set(1, cdi_x, cdi_y);
+        if (mouse_inside && !capture_suspended) capture_set(1, cdi_x, cdi_y);
     } else if (capture && ++capture_idle >= 100) {   /* 2 s at 50 Hz */
         capture_set(0, cdi_x, cdi_y);
     }
@@ -313,12 +369,24 @@ int video_display_handle_event(const void *ev)
         const SDL_SysWMmsg *m = e->syswm.msg;
         if (m && m->subsystem == SDL_SYSWM_WINDOWS && m->msg.win.msg == WM_COMMAND &&
             HIWORD(m->msg.win.wParam) == 0 && menu_cb) {
-            menu_cb((int)LOWORD(m->msg.win.wParam));
+            int id = (int)LOWORD(m->msg.win.wParam);
+            if (id == VM_INPUT_CONFIG) { input_ui_open(); return 1; }
+            if (id == VM_MOUSE) {
+                input_map_set_mouse(!input_map_mouse_enabled());
+                video_display_menu_check(VM_MOUSE, input_map_mouse_enabled());
+                return 1;
+            }
+            menu_cb(id);
             return 1;
         }
         return 0;
     }
 #endif
+    case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED:
+    case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: case SDL_CONTROLLERAXISMOTION:
+        if (input_ui_is_open()) return input_ui_event(e);
+        input_map_event(e, 0);          /* hot-plug; held state is read each frame */
+        return 1;
     case SDL_WINDOWEVENT:
         if (e->window.windowID != window_id) return 0;
         if (e->window.event == SDL_WINDOWEVENT_ENTER) { mouse_inside = 1; apply_host_cursor(); }
@@ -330,14 +398,33 @@ int video_display_handle_event(const void *ev)
         return 0;                       /* let the console handle close, etc. */
     case SDL_MOUSEMOTION:
         if (e->motion.windowID != window_id) return 0;
+        if (input_ui_is_open()) return input_ui_event(e);
+        if (!input_map_mouse_enabled()) return 1;     /* mouse switched off */
         if (capture) {                          /* moves -> impulses (pointer units) */
+            int mx = e->motion.x, my = e->motion.y;     /* logical 768x576 */
+            if (warp_pending) {                 /* the jump of our own warp */
+                if ((mx > 384 - 24 && mx < 384 + 24 && my > 288 - 24 && my < 288 + 24) || --warp_pending == 0)
+                    warp_pending = 0;
+                return 1;
+            }
+            if (my <= 2 && e->motion.yrel < 0) {   /* pushed against the top: free */
+                capture_suspended = 1;
+                capture = 0;                    /* no warp: stay at the menu bar */
+                cap_acc_x = cap_acc_y = 0;
+                SDL_ShowCursor(SDL_ENABLE);
+                return 1;
+            }
+            if (mx < CAP_MARGIN || mx > WIN_W - CAP_MARGIN || my > WIN_H - CAP_MARGIN) {
+                warp_logical(384.0f, 288.0f);   /* keep the hidden mouse inside */
+                warp_pending = 8;
+            }
             cap_acc_x += e->motion.xrel * frame_w;
             cap_acc_y += e->motion.yrel * 560;
             int dx = cap_acc_x / WIN_W, dy = cap_acc_y / WIN_H;
             cap_acc_x -= dx * WIN_W;
             cap_acc_y -= dy * WIN_H;
             if ((dx || dy) && pointer_cb)
-                pointer_cb(pointer_ctx, dx, dy, ptr_buttons | VIDEO_PTR_IMPULSE);
+                pointer_cb(pointer_ctx, dx, dy, ptr_buttons | pad_buttons | VIDEO_PTR_IMPULSE);
             return 1;
         }
         window_to_pointer(e->motion.x, e->motion.y);
@@ -346,12 +433,18 @@ int video_display_handle_event(const void *ev)
     case SDL_MOUSEBUTTONDOWN:
     case SDL_MOUSEBUTTONUP: {
         if (e->button.windowID != window_id) return 0;
-        int bit = (e->button.button == SDL_BUTTON_LEFT)  ? 1 :
-                  (e->button.button == SDL_BUTTON_RIGHT) ? 2 : 0;
+        if (input_ui_is_open()) return input_ui_event(e);
+        if (!input_map_mouse_enabled()) return 1;     /* mouse switched off */
+        if (capture_suspended && e->type == SDL_MOUSEBUTTONDOWN) {
+            capture_suspended = 0;              /* click in the picture: capture again */
+            apply_host_cursor();
+        }
+        int bit = (e->button.button == SDL_BUTTON_LEFT)  ? (swap_mouse ? 2 : 1) :
+                  (e->button.button == SDL_BUTTON_RIGHT) ? (swap_mouse ? 1 : 2) : 0;
         if (!bit) return 1;
         if (e->type == SDL_MOUSEBUTTONDOWN) ptr_buttons |= bit; else ptr_buttons &= ~bit;
         if (capture) {                          /* no move, only the buttons */
-            if (pointer_cb) pointer_cb(pointer_ctx, 0, 0, ptr_buttons | VIDEO_PTR_IMPULSE);
+            if (pointer_cb) pointer_cb(pointer_ctx, 0, 0, ptr_buttons | pad_buttons | VIDEO_PTR_IMPULSE);
             return 1;
         }
         window_to_pointer(e->button.x, e->button.y);
@@ -361,9 +454,14 @@ int video_display_handle_event(const void *ev)
     case SDL_KEYDOWN:
     case SDL_KEYUP: {
         if (e->key.windowID != window_id) return 0;
+        if (input_ui_is_open()) return input_ui_event(e);
         int down = (e->type == SDL_KEYDOWN);
         if (down && !e->key.repeat && e->key.keysym.sym == SDLK_o && (SDL_GetModState() & KMOD_CTRL)) {
             if (menu_cb) menu_cb(VM_OPEN_DISC);
+            return 1;
+        }
+        if (down && !e->key.repeat && e->key.keysym.sym == SDLK_r && (SDL_GetModState() & KMOD_CTRL)) {
+            if (menu_cb) menu_cb(VM_RESET);
             return 1;
         }
         if (down && !e->key.repeat && (e->key.keysym.sym == SDLK_RETURN || e->key.keysym.sym == SDLK_KP_ENTER)
@@ -371,33 +469,8 @@ int video_display_handle_event(const void *ev)
             video_display_toggle_fullscreen();
             return 1;
         }
-        /* Arrows: one impulse per key press / auto-repeat (relative move,
-         * as a CD-i thumbstick): EMU_IMPULSE units, x3 with Shift */
-        static int impulse = 0;
-        if (!impulse) { const char *e2 = getenv("EMU_IMPULSE"); impulse = (e2 && atoi(e2) > 0) ? atoi(e2) : 24; }
-        int step = (SDL_GetModState() & KMOD_SHIFT) ? impulse * 3 : impulse;
-        int dx = 0, dy = 0;
-        switch (e->key.keysym.sym) {
-        case SDLK_LEFT:  dx = -step; break;
-        case SDLK_RIGHT: dx =  step; break;
-        case SDLK_UP:    dy = -step; break;
-        case SDLK_DOWN:  dy =  step; break;
-        case SDLK_SPACE:
-        case SDLK_RETURN:
-        case SDLK_KP_ENTER:
-            if (down) ptr_buttons |= 1; else ptr_buttons &= ~1;
-            break;
-        case SDLK_BACKSPACE:
-            if (down) ptr_buttons |= 2; else ptr_buttons &= ~2;
-            break;
-        default:
-            return 1;
-        }
-        if (dx || dy) {
-            if (down && pointer_cb) pointer_cb(pointer_ctx, dx, dy, ptr_buttons | VIDEO_PTR_IMPULSE);
-            return 1;
-        }
-        pointer_report();
+        /* Other keys: read each frame through their assignment
+         * (input_map_frame, Controles > Assigner les touches) */
         return 1;
     }
     case SDL_TEXTINPUT:
@@ -607,6 +680,31 @@ int video_display_update(void *scc66470, void *bus)
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
     SDL_RenderCopy(ren, tex, &src_rect, NULL);    /* stretched to the 4:3 surface */
+    input_ui_render(ren);                         /* assignment panel, if open */
+    {   /* EMU_UI_SHOT=file.bmp: open the panel and save the window (tests) */
+        static int shot = 0;
+        const char *p = getenv("EMU_UI_SHOT");
+        if (p && shot < 3 && ++shot == 2) input_ui_open();
+        if (p && shot == 3) {
+            int ow, oh;
+            SDL_GetRendererOutputSize(ren, &ow, &oh);
+            SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
+            if (s && SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch) == 0)
+                SDL_SaveBMP(s, p);
+            if (s) SDL_FreeSurface(s);
+        }
+        if (p && shot == 2) shot = 3;
+    }
     SDL_RenderPresent(ren);
+
+    /* Keyboard / controllers -> CD-i pointer, through their assignment */
+    if (!input_ui_is_open() && pointer_cb) {
+        int dx, dy, b;
+        input_map_frame(SDL_GetKeyboardFocus() == win, &dx, &dy, &b);
+        if (dx || dy || b != pad_buttons) {
+            pad_buttons = b;
+            pointer_cb(pointer_ctx, dx, dy, ptr_buttons | pad_buttons | VIDEO_PTR_IMPULSE);
+        }
+    }
     return 1;
 }

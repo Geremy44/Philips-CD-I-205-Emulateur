@@ -61,7 +61,10 @@ Ce qui fonctionne :
   (niveau 5, autovecteur 61) — c'est le « top » dont les jeux se servent
   pour se synchroniser.
 - **Reset par le 68HC05** (`$8A` sur `$200005`) : redémarrage à chaud après
-  un `F$Panic` / « Fatal System Error », comme le vrai lecteur.
+  un `F$Panic` / « Fatal System Error », comme le vrai lecteur — c'est aussi
+  ce qui ramène au shell quand on quitte un logiciel. Le V.S.D. est remis
+  à zéro et chaque SCC66470 garde son câblage (programme ICA de l'esclave
+  en `$80400`), sinon le shell restait sur un écran cyan puis délavé.
 - **Vidéo** : les deux SCC66470 d'après leur datasheet (maître = plan A en
   DRAM banque 1, esclave = plan B en banque 2) — programmes ICA/DCA,
   fichiers bitmap / run-length / mosaïque en 4 et 8 bits/pixel, bordure,
@@ -107,7 +110,7 @@ ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
 
 | Jeu | État | Remarques |
 |-----|------|-----------|
-| *Astérix : Le Défi de César* | 🟡 Lancement OK, pas testé complètement | Intro, dessins animés, menus, plateaux, voix, musique, bruitages ; partie complète et durée de jeu pas encore vérifiées |
+| *Astérix : Le Défi de César* | 🟡 Lancement OK, pas testé complètement | Intro, dessins animés, menus, plateaux, voix, musique, bruitages ; une partie de 30 min sans souci, jouée depuis le vrai CD (lecteur du PC) ; partie complète pas encore vérifiée |
 | *Inca* | 🟡 Lancement OK, pas testé complètement | Image, son et curseur ; demandait l'INTERRUPT des DCA et les facteurs DB/DC changés en cours d'image |
 | *CDI Pinball Volume 1* | 🟡 Lancement OK, pas testé complètement | Les deux flippers répondent (boutons 1 / 2) ; un peu de latence des commandes dans l'émulateur |
 | *The 7th Guest* (disque 1) | ⛔ Non supporté | Nécessite la cartouche FMV (MPEG) |
@@ -135,6 +138,23 @@ un CD audio), `.iso` (secteurs de 2048 octets). Une piste déclarée
 « données » mais sans en-tête de synchronisation CD-ROM est jouée comme
 de l'audio (CD audio mal décrit par son `.cue`).
 
+**Disque physique (lecteur CD / DVD / BD du PC, Windows)** : le menu Fichier
+liste chaque lecteur optique de la machine :
+
+- **Jouer le disque du lecteur X:** — l'émulateur lit directement le disque
+  (`cdrom:X` en argument ou dans `EMU_DISC` marche aussi) ;
+- **Extraire le disque du lecteur X: en BIN/CUE…** — copie le disque entier
+  en secteurs bruts de 2352 octets (données CD-i et pistes audio) dans
+  `CDI-205/Games/<nom>/<nom>.bin` + `.cue` (dossier trouvé au-dessus de
+  l'exécutable, sinon `Games` à côté de lui). Le nom est le volume du
+  disque CD-i ; un dossier existant n'est jamais écrasé (`_2`, `_3`…). La
+  progression s'affiche dans le titre de la fenêtre, le résultat dans une
+  boîte de dialogue ; l'émulateur continue de tourner pendant ce temps.
+  Secteurs illisibles : 3 essais, puis remplis de zéros (signalé).
+
+Lecture brute par la commande SCSI READ CD (`$BE`, SCSI pass-through),
+`IOCTL_CDROM_RAW_READ` en secours.
+
 ### Contrôles
 
 La fenêtre vidéo a une barre de menus (Fichier / Affichage / Contrôles) ;
@@ -143,9 +163,13 @@ la fermer quitte l'émulateur. La console série est masquée par défaut
 
 | Action | Touche / souris (fenêtre vidéo) |
 |---|---|
-| Déplacer le curseur CD-i | souris (le curseur CD-i reste sous la souris) |
-| Impulsions de direction (jeux « manette ») | flèches (Maj = ×3, `EMU_IMPULSE`) |
-| Boutons du CD-i | clics gauche / droit (inversés par défaut comme sur la manette, **F7** pour échanger), ou Espace-Entrée / Retour arrière |
+| Déplacer le curseur CD-i | souris (le curseur CD-i reste sous la souris), clavier ou manette |
+| Directions (clavier / manette) | flèches, pavé 8-2-4-6, croix et stick gauche ; un appui = une impulsion, maintenu = déplacement continu ; Maj / RB / RT = ×3 |
+| Boutons du CD-i | clics gauche / droit (inversés par défaut comme sur la manette, **F7** pour échanger) ; Espace-Entrée / Retour arrière-Ctrl droit ; manette A-X / B-Y |
+| Assigner les touches et la manette | menu **Contrôles > Assigner les touches…** : clic sur une case puis touche, bouton ou direction de stick ; clic droit efface ; enregistré dans `controles.ini` à côté de l'exécutable |
+| Couper la souris (clavier / manette seuls) | menu **Contrôles > Souris active** (aussi dans le panneau d'assignation) |
+| Réinitialiser le CD-i (bouton reset, le disque reste) | menu **Fichier > Réinitialiser le CD-i** ou **Ctrl+R** |
+| Ouvrir un disque (image) | menu **Fichier > Ouvrir un disque…** ou **Ctrl+O**, ou le bouton OPEN du CD-i |
 | Plein écran 4:3 (bandes noires) / fenêtre | **F11** ou **Alt+Entrée** |
 | Afficher / masquer la souris du PC sur l'image | **F8** |
 | Inverser clic gauche / droit | **F7** |
@@ -203,6 +227,7 @@ et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
 | `EMU_CPI=n` | durée fixe de n cycles par instruction au lieu des tables du SCC68070 (ancien comportement : 8) |
 | `EMU_CPU_STATS=1` | cycles moyens par instruction, tous les 50 millions d'instructions |
 | `EMU_HEADLESS=1` | fenêtre vidéo cachée (tests automatiques) |
+| `EMU_UI_SHOT=f.bmp` | ouvre le panneau d'assignation et enregistre une capture de la fenêtre |
 
 ---
 

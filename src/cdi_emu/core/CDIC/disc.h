@@ -8,6 +8,7 @@
  *                CD-DA (badly ripped audio CDs) and is played as audio
  *   .bin / .img  raw 2352-byte sectors, a single CD-i (mode 2) track
  *   .iso         cooked 2048-byte mode 1 sectors (header synthesized)
+ *   cdrom:X      the disc in the PC's drive X: (raw sectors, cdrom_win.c)
  *
  * Addresses are LBAs: LBA 0 = absolute time 00:02:00.
  */
@@ -38,6 +39,9 @@ typedef struct {
     disc_track_t track[DISC_MAX_TRACKS];
     int          leadout;        /* LBA of the lead-out */
     char         path[1100];
+    struct cdrom *drive;         /* physical drive ("cdrom:F"), else NULL */
+    uint8_t     *cache;          /* drive read-ahead */
+    int          cache_lba, cache_n;
 } disc_t;
 
 /* Open an image (.cue, .bin, .img, .iso). Returns 0 on success. */

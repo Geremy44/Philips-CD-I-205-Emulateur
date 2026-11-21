@@ -109,3 +109,4 @@ CDI-205/Games/
 *.chd
 # Sons extraits des jeux (EMU_AUDIO_DUMP)
 *.wav
+controles.ini

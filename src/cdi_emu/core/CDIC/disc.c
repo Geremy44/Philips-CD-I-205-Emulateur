@@ -3,6 +3,7 @@
  */
 
 #include "disc.h"
+#include "cdrom_win.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -150,16 +151,44 @@ static int open_cue(disc_t *d, const char *cue)
     return 0;
 }
 
+#define DRIVE_CACHE 32                  /* sectors read at once from a drive */
+
+/* "cdrom:X": the disc in the PC's drive X: */
+static int open_drive(disc_t *d, char letter)
+{
+    cdrom_toc_t toc;
+    d->drive = cdrom_open(letter);
+    if (!d->drive) { fprintf(stderr, "[DISC] cannot open drive %c:\n", letter); return -1; }
+    if (cdrom_read_toc(d->drive, &toc) != 0 || toc.ntracks < 1) {
+        fprintf(stderr, "[DISC] no readable disc in drive %c:\n", letter);
+        cdrom_close(d->drive); d->drive = NULL;
+        return -1;
+    }
+    d->cache = malloc((size_t)DRIVE_CACHE * DISC_RAW);
+    if (!d->cache) { cdrom_close(d->drive); d->drive = NULL; return -1; }
+    d->cache_n = 0;
+    d->sector_size = DISC_RAW;
+    d->ntracks = toc.ntracks;
+    for (int i = 0; i < toc.ntracks; i++) {
+        d->track[i].number = toc.number[i];
+        d->track[i].audio = toc.audio[i];
+        d->track[i].start = toc.start[i];
+    }
+    d->leadout = toc.leadout;
+    return 0;
+}
+
 int disc_open(disc_t *d, const char *path)
 {
     disc_close(d);
     memset(d, 0, sizeof(*d));
     int r;
-    if (ext_is(path, "cue"))      r = open_cue(d, path);
+    if (!strncmp(path, "cdrom:", 6) && path[6]) r = open_drive(d, path[6]);
+    else if (ext_is(path, "cue")) r = open_cue(d, path);
     else if (ext_is(path, "iso")) r = open_plain(d, path, 2048);
     else                          r = open_plain(d, path, DISC_RAW);
     if (r != 0) { disc_close(d); memset(d, 0, sizeof(*d)); return -1; }
-    if (!ext_is(path, "cue") && d->sector_size == DISC_RAW && !has_sync(d->f, 0)) {
+    if (!d->drive && !ext_is(path, "cue") && d->sector_size == DISC_RAW && !has_sync(d->f, 0)) {
         d->track[0].audio = 1;                       /* raw .bin of an audio CD */
         fprintf(stderr, "[DISC] no CD-ROM sync: audio CD image (one track)\n");
     }
@@ -178,10 +207,14 @@ void disc_close(disc_t *d)
         if (d->files[i]) fclose(d->files[i]);
     d->nfiles = 0;
     d->f = NULL;
+    if (d->drive) cdrom_close(d->drive);
+    d->drive = NULL;
+    free(d->cache);
+    d->cache = NULL;
     d->ntracks = 0;
 }
 
-int disc_present(const disc_t *d) { return d->f != NULL; }
+int disc_present(const disc_t *d) { return d->f != NULL || d->drive != NULL; }
 
 int disc_track_of(const disc_t *d, int lba)
 {
@@ -203,9 +236,33 @@ int disc_read(disc_t *d, int lba, uint8_t out[DISC_RAW])
 {
     memset(out, 0, DISC_RAW);
     int t = disc_track_of(d, lba);
-    if (!d->f || t < 0 || lba < 0 || lba >= d->leadout) {
+    if (!disc_present(d) || t < 0 || lba < 0 || lba >= d->leadout) {
         header(out, lba, 2);                          /* empty mode 2 sector */
         return -1;
+    }
+    if (d->drive) {                                   /* physical drive, read ahead */
+        if (lba < d->cache_lba || lba >= d->cache_lba + d->cache_n) {
+            int n = d->leadout - lba < DRIVE_CACHE ? d->leadout - lba : DRIVE_CACHE;
+            int tr_end = (t + 1 < d->ntracks) ? d->track[t + 1].start : d->leadout;
+            if (lba + n > tr_end) n = tr_end - lba;  /* one track per read */
+            d->cache_n = 0;
+            int ok = 0;
+            for (int tries = 0; tries < 3 && !ok; tries++)   /* busy / spinning up */
+                ok = cdrom_read_raw(d->drive, lba, n, d->track[t].audio, d->cache) == 0;
+            for (int tries = 0; tries < 3 && !ok; tries++) {  /* then this sector alone */
+                n = 1;
+                ok = cdrom_read_raw(d->drive, lba, 1, d->track[t].audio, d->cache) == 0;
+            }
+            if (!ok) {
+                fprintf(stderr, "[DISC] drive read error at LBA %d\n", lba);
+                header(out, lba, 2);
+                return -1;
+            }
+            d->cache_lba = lba;
+            d->cache_n = n;
+        }
+        memcpy(out, d->cache + (size_t)(lba - d->cache_lba) * DISC_RAW, DISC_RAW);
+        return t;
     }
     int64_t off = d->track[t].file_offset + (int64_t)(lba - d->track[t].start) * d->sector_size;
     FILE *f = d->files[d->track[t].file];

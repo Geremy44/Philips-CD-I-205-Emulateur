@@ -55,6 +55,12 @@ gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/GPU/vsd.c -o bin/vsd.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/GPU/input_ui.c -o bin/input_ui.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/input_map.c -o bin/input_map.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/CDIC/cdrom_win.c -o bin/cdrom_win.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/SLAVE/slave.c -o bin/slave.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/SLAVE/slave_hle.c -o bin/slave_hle.o
