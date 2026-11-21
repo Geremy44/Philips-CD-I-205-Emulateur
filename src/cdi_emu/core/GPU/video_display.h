@@ -44,4 +44,8 @@ void video_display_set_pointer_cb(video_pointer_cb cb, void *ctx);
  * window and was consumed (opaque pointer to an SDL_Event). */
 int video_display_handle_event(const void *sdl_event);
 
+/* Flag in the buttons argument of the pointer callback: (x, y) are a
+ * relative impulse (dx, dy) instead of an absolute position */
+#define VIDEO_PTR_IMPULSE 0x100
+
 #endif /* VIDEO_DISPLAY_H */

@@ -3,6 +3,19 @@
  */
 
 #include "rtc_m48t08.h"
+#include <time.h>
+
+/* Host time, or a virtual clock (deterministic input replays): when
+ * rtc_virtual_base is set, time = base + emulated CPU cycles / 15 MHz. */
+int64_t  rtc_virtual_base = 0;
+uint64_t rtc_virtual_cycles = 0;
+
+int64_t rtc_host_now(void)
+{
+    if (rtc_virtual_base)
+        return rtc_virtual_base + (int64_t)(rtc_virtual_cycles / 15000000u);
+    return (int64_t)time(NULL);
+}
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -13,7 +26,7 @@ static int     from_bcd(uint8_t v) { return ((v >> 4) & 0xF) * 10 + (v & 0xF); }
 static int64_t emulated_now(const rtc_m48t08_t *r)
 {
     if (r->stopped) return r->stopped_at;
-    return (int64_t)time(NULL) + r->offset;
+    return rtc_host_now() + r->offset;
 }
 
 /* Fill regs[1..7] with the BCD fields of emulated time t (local time) */
@@ -53,7 +66,7 @@ static void commit(rtc_m48t08_t *r)
     if (t == (time_t)-1) return;
 
     int stop = (r->regs[1] & 0x80) != 0;
-    r->offset = (int64_t)t - (int64_t)time(NULL);
+    r->offset = (int64_t)t - rtc_host_now();
     r->stopped = stop;
     r->stopped_at = (int64_t)t;
     r->staged = 0;

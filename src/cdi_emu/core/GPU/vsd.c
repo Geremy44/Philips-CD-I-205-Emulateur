@@ -11,8 +11,11 @@
  *   CE880000   cursor control: bit 23 = enable, bits 3-0 = colour (IRGB)
  *   CF0r pppp  cursor pattern row r, 16 pixels (bit 15 = leftmost)
  *   C2000001   plane order: plane B in front
- * Not modelled yet: weighted mixing, other transparency conditions,
- * DYUV/RGB555 coding.
+ *   CA108080   DYUV start value plane A: Y = $10, U = V = $80
+ * DYUV (ICM 5): each pair of bytes codes deltas, see vsd_dyuv_line().
+ * DB/DC image contribution factors and C1 bit 23 mixing are modelled
+ * (fades / cross-fades). Not modelled yet: per-region factors,
+ * RGB555 coding, start values reloaded per line by the DCA.
  */
 
 #include "vsd.h"
@@ -21,7 +24,8 @@
 void vsd_reset(vsd_t *v)
 {
     memset(v, 0, sizeof(*v));
-    v->tcr = 0x08;                        /* plane A: never transparent */
+    v->tcr = 0x800008;                    /* overlay; plane A: never transparent */
+    v->weight_a = v->weight_b = 0x3F;     /* full contribution until set */
     v->icm = 0x01;                        /* plane A: CLUT8 */
     for (int i = 0; i < 256; i++)         /* grey ramp until loaded */
         v->clut[i] = ((uint32_t)i << 16) | ((uint32_t)i << 8) | (uint32_t)i;
@@ -48,6 +52,8 @@ void vsd_command(vsd_t *v, uint32_t w)
     case 0xCD: v->cursor_pos  = data; break;
     case 0xCE: v->cursor_ctrl = data; break;
     case 0xCF: v->cursor_pat[(data >> 16) & 0xF] = (uint16_t)data; break;
+    case 0xCA: v->dyuv_start_a = data; break;
+    case 0xCB: v->dyuv_start_b = data; break;
     case 0xD8: v->backdrop    = data; break;
     case 0xDB: v->weight_a    = data; break;
     case 0xDC: v->weight_b    = data; break;
@@ -87,28 +93,112 @@ static int plane_transparent(uint32_t mode, uint32_t rgb, uint32_t key, uint32_t
 {
     int cond;
     uint32_t cmp = 0xFCFCFCu & ~mask;
+    int keyed = ((rgb & cmp) == (key & cmp));
+    /* MCD212 encoding: 0 always, 1 colour key, 2 RGB555 transparency bit,
+     * 3/4 region (matte) flag 0/1, 5/6 matte flag 0/1 OR colour key.
+     * Region flags and the T bit are not emulated (taken as 0). */
     switch (mode & 7) {
     case 0:  cond = 1; break;
-    case 1:  cond = ((rgb & cmp) == (key & cmp)); break;
-    default: cond = 0; break;                     /* other conditions: not modelled */
+    case 1:  cond = keyed; break;
+    case 5:
+    case 6:  cond = keyed; break;
+    default: cond = 0; break;
     }
     return (mode & 8) ? !cond : cond;
 }
 
+/* ---- DYUV (Green Book, "Delta YUV") ----
+ * A line is a sequence of byte pairs:  byte 0 = dU:dY0, byte 1 = dV:dY1
+ * (4-bit codes, high nibble first). Each code selects a quantized step
+ * added modulo 256 to the previous value; the line starts from the CA/CB
+ * value. The pair's U/V belong to the second pixel, the first one uses
+ * the average of the previous and new values. */
+static const uint8_t dyuv_step[16] = {
+    0, 1, 4, 9, 16, 27, 44, 79, 128, 177, 212, 229, 240, 247, 252, 255
+};
+
+static uint8_t clamp8(int x) { return (uint8_t)(x < 0 ? 0 : x > 255 ? 255 : x); }
+
+/* CD-i YUV -> RGB (Green Book coefficients, U/V centred on 128) */
+static uint32_t yuv_rgb(int y, int u, int v)
+{
+    u -= 128; v -= 128;
+    int r = y + (351 * v) / 256;
+    int g = y - (86 * u + 179 * v) / 256;
+    int b = y + (444 * u) / 256;
+    return ((uint32_t)clamp8(r) << 16) | ((uint32_t)clamp8(g) << 8) | clamp8(b);
+}
+
+int vsd_plane_dyuv(const vsd_t *v, int plane_b)
+{
+    uint32_t icm = plane_b ? (v->icm >> 8) & 0xF : v->icm & 0xF;
+    return icm == 0x5;
+}
+
+void vsd_dyuv_line(const vsd_t *v, int plane_b, const uint8_t *src, int w, uint32_t *out)
+{
+    uint32_t st = plane_b ? v->dyuv_start_b : v->dyuv_start_a;
+    uint8_t y = (uint8_t)(st >> 16), u = (uint8_t)(st >> 8), vv = (uint8_t)st;
+    /* one 8-bit pixel = 2 output pixels: a byte pair spans 4 output pixels */
+    for (int x = 0; x + 3 < w; x += 4) {
+        uint8_t b0 = src[x], b1 = src[x + 2];
+        uint8_t u1 = (uint8_t)(u + dyuv_step[b0 >> 4]);
+        uint8_t y0 = (uint8_t)(y + dyuv_step[b0 & 0xF]);
+        uint8_t v1 = (uint8_t)(vv + dyuv_step[b1 >> 4]);
+        uint8_t y1 = (uint8_t)(y0 + dyuv_step[b1 & 0xF]);
+        uint32_t p0 = yuv_rgb(y0, (u + u1) >> 1, (vv + v1) >> 1);
+        uint32_t p1 = yuv_rgb(y1, u1, v1);
+        out[x] = out[x + 1] = p0;
+        out[x + 2] = out[x + 3] = p1;
+        y = y1; u = u1; vv = v1;
+    }
+    for (int x = w & ~3; x < w; x++) out[x] = yuv_rgb(y, u, vv);
+}
+
+/* RGB 8:8:8 x icf/63 (icf 0..63) */
+static uint32_t scale_rgb(uint32_t rgb, uint32_t icf)
+{
+    if (icf >= 63) return rgb;
+    uint32_t r = ((rgb >> 16) & 0xFF) * icf / 63, g = ((rgb >> 8) & 0xFF) * icf / 63,
+             b = (rgb & 0xFF) * icf / 63;
+    return (r << 16) | (g << 8) | b;
+}
+
 uint32_t vsd_mix(const vsd_t *v, uint8_t a, int a_on, uint8_t b, int b_on)
 {
+    return vsd_mix_rgb(v, a, a_on, NULL, b, b_on, NULL);
+}
+
+uint32_t vsd_mix_rgb(const vsd_t *v, uint8_t a, int a_on, const uint32_t *dyuv_a,
+                     uint8_t b, int b_on, const uint32_t *dyuv_b)
+{
     uint32_t rgb_a = 0, rgb_b = 0;
-    int vis_a = a_on && plane_rgb(v, 0, a, &rgb_a) &&
+    int got_a = dyuv_a ? (rgb_a = *dyuv_a, 1) : plane_rgb(v, 0, a, &rgb_a);
+    int got_b = dyuv_b ? (rgb_b = *dyuv_b, 1) : plane_rgb(v, 1, b, &rgb_b);
+    int vis_a = a_on && got_a &&
                 !plane_transparent(v->tcr & 0xF, rgb_a, v->transp_a, v->mask_a);
-    int vis_b = b_on && plane_rgb(v, 1, b, &rgb_b) &&
+    int vis_b = b_on && got_b &&
                 !plane_transparent((v->tcr >> 8) & 0xF, rgb_b, v->transp_b, v->mask_b);
 
     /* Overlay (C1 bit 23 set in all traces): the front plane hides the back
      * one where it is not transparent. C2 bit 0 = plane B in front.
      * TODO: weighted mixing (C1 bit 23 clear, weights DB/DC). */
+    /* Image contribution factors (DB plane A, DC plane B, 0..63): each plane
+     * is attenuated by ICF/63 -- this is how fades to/from black are done.
+     * TCR bit 23 set: overlay (front plane hides the back one); clear:
+     * mixing, the two weighted planes are added (cross-fades). */
+    if (vis_a) rgb_a = scale_rgb(rgb_a, v->weight_a & 0x3F);
+    if (vis_b) rgb_b = scale_rgb(rgb_b, v->weight_b & 0x3F);
     uint32_t rgb;
-    if (v->plane_order & 1) rgb = vis_b ? rgb_b : vis_a ? rgb_a : irgb(v->backdrop);
-    else                    rgb = vis_a ? rgb_a : vis_b ? rgb_b : irgb(v->backdrop);
+    if (!(v->tcr & 0x800000u) && (vis_a || vis_b)) {
+        uint32_t a = vis_a ? rgb_a : 0, b = vis_b ? rgb_b : 0;
+        rgb = 0;
+        for (int sh = 0; sh <= 16; sh += 8) {
+            uint32_t s = ((a >> sh) & 0xFF) + ((b >> sh) & 0xFF);
+            rgb |= (s > 255 ? 255u : s) << sh;
+        }
+    } else if (v->plane_order & 1) rgb = vis_b ? rgb_b : vis_a ? rgb_a : irgb(v->backdrop);
+    else                           rgb = vis_a ? rgb_a : vis_b ? rgb_b : irgb(v->backdrop);
     return 0xFF000000u | rgb;
 }
 

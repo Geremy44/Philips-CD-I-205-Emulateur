@@ -26,7 +26,7 @@
 #define SCC_TC       0x1FFFFEu
 
 #define SCC_CSR_DA  0x80u
-#define SCC_CYCLES_PER_LINE  1600u
+#define SCC_CYCLES_PER_LINE  960u     /* 64 us PAL line at 15 MHz -> 50 Hz frames */
 #define SCC_LINES_PER_FRAME  312u
 #define SCC_ACTIVE_LINES     288u
 #define SCC_CYCLES_PER_FRAME ((uint64_t)SCC_CYCLES_PER_LINE * SCC_LINES_PER_FRAME)
@@ -56,11 +56,21 @@ typedef struct scc66470 {
     uint64_t cycle_counter;
     uint32_t clut[256];
     uint32_t ica_pointer;   /* $400 (master) or $80400 (slave dual), Table 8 */
+    uint8_t  it1;           /* CSR status IT1: INTERRUPT instruction executed */
+    int      it_logged;
 } scc66470_t;
 
 void scc66470_init(scc66470_t *v);
 uint8_t scc66470_status(const scc66470_t *v);
-void scc66470_tick(scc66470_t *v, int cpu_cycles);
+/* Advances the beam; returns 1 when a new frame starts (vertical retrace) */
+int  scc66470_tick(scc66470_t *v, int cpu_cycles);
+
+/* At the vertical retrace: run the ICA program and set IT1 if it holds an
+ * INTERRUPT instruction (and CSR DI1, bit 15, does not disable it) */
+void scc66470_vretrace(scc66470_t *v, const uint8_t *dram, uint32_t dram_size);
+
+/* IRQ request: IT1 pending (the 205 wires it to level 5, autovector 61) */
+int  scc66470_irq(const scc66470_t *v);
 uint8_t  scc66470_read8 (scc66470_t *v, uint32_t addr);
 uint16_t scc66470_read16(scc66470_t *v, uint32_t addr);
 void scc66470_write8 (scc66470_t *v, uint32_t addr, uint8_t val);

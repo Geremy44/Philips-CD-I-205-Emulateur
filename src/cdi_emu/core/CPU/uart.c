@@ -116,6 +116,11 @@ void uart_write8(bus_t *b, uint32_t addr, uint8_t v) {
     case UART_TX_OFF:   /* TX Holding Register - output to terminal */
         b->uart.tx_buf = v;
         uart_console_putchar((char)v);
+        {   /* EMU_UART_LOG=1: copy the console output to stderr */
+            static int log = -1;
+            if (log < 0) { const char *s = getenv("EMU_UART_LOG"); log = (s && *s && *s != '0'); }
+            if (log) fputc(v, stderr);
+        }
         break;
 
     case UART_RX_OFF:   /* RX Holding Register (read-only) */

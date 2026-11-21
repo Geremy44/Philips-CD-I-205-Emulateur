@@ -32,6 +32,11 @@ typedef struct rtc_m48t08 {
 } rtc_m48t08_t;
 
 void    rtc_init (rtc_m48t08_t *r);
+
+/* Time source: host clock, or virtual (base + cycles / 15 MHz) if set */
+extern int64_t  rtc_virtual_base;
+extern uint64_t rtc_virtual_cycles;
+int64_t rtc_host_now(void);
 int     rtc_handles(uint32_t addr);
 uint8_t rtc_read8 (rtc_m48t08_t *r, uint32_t addr);
 void    rtc_write8(rtc_m48t08_t *r, uint32_t addr, uint8_t v);

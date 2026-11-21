@@ -49,7 +49,7 @@ static uint16_t scc_peek16(const scc66470_t *v, uint32_t addr)
         /* TODO: per the datasheet a read returns only the status bits
          * (DA FG PA - - IT2 IT1 BE); the low control bits are echoed here
          * because the boot code currently relies on this behaviour. */
-        return (uint16_t)(scc66470_status(v) | (v->csr_control & 0x007Fu));
+        return (uint16_t)(scc66470_status(v) | (v->csr_control & 0x007Du) | (v->it1 ? 0x02u : 0u));
     case SCC_DCR: return v->dcr; case SCC_VSR: return v->vsr; case SCC_BCR: return v->bcr;
     case SCC_DCR2: return v->dcr2; case SCC_DCP: return v->dcp; case SCC_SWM: return v->swm;
     case SCC_A: return v->a; case SCC_B: return v->b; case SCC_PCR: return v->pcr;
@@ -65,14 +65,26 @@ static int is_native8(uint32_t addr)
 }
 
 
-void scc66470_tick(scc66470_t *v, int cpu_cycles)
+int scc66470_tick(scc66470_t *v, int cpu_cycles)
 {
-    if (cpu_cycles > 0)
-        v->cycle_counter = (v->cycle_counter + (uint64_t)(unsigned)cpu_cycles) % SCC_CYCLES_PER_FRAME;
+    if (cpu_cycles <= 0) return 0;
+    uint64_t c = v->cycle_counter + (uint64_t)(unsigned)cpu_cycles;
+    v->cycle_counter = c % SCC_CYCLES_PER_FRAME;
+    return c >= SCC_CYCLES_PER_FRAME;
+}
+
+int scc66470_irq(const scc66470_t *v)
+{
+    return v->it1 != 0;
 }
 
 uint8_t scc66470_read8(scc66470_t *v, uint32_t addr)
 {
+    if (addr == SCC_CSR + 1) {                 /* status byte: reading clears IT1 */
+        uint8_t r = (uint8_t)scc_peek16(v, SCC_CSR);
+        v->it1 = 0;
+        return r;
+    }
     /* These four locations are physically 8-bit registers, not byte lanes
        of a surrounding 16-bit register. */
     if (is_native8(addr)) {
@@ -91,6 +103,11 @@ uint8_t scc66470_read8(scc66470_t *v, uint32_t addr)
 
 uint16_t scc66470_read16(scc66470_t *v, uint32_t addr)
 {
+    if (addr == SCC_CSR) {                     /* reading the status clears IT1 */
+        uint16_t r = scc_peek16(v, addr);
+        v->it1 = 0;
+        return r;
+    }
     return scc_peek16(v, addr);
 }
 
@@ -162,6 +179,7 @@ typedef struct {
     uint8_t  bcr;      /* border colour (8-bit pixel value) */
     int ss, cm, om1, om2, mf1, mf2, ft1, ft2;
     int dcp_reloaded;  /* a RELOAD DCP happened during this DCA */
+    int interrupt;     /* an INTERRUPT instruction was executed */
     scc_frame_t *out;
 } disp_state_t;
 
@@ -213,7 +231,7 @@ static int run_control(disp_state_t *s, const vram_t *m, uint32_t ptr,
             if ((w >> 28) == 0x5) return n + 1;
             if (ctx != CTX_DCA_INDEP) ptr = s->vac;
             break;
-        case 0x6: break;                           /* INTERRUPT (IT1): no IRQ model yet */
+        case 0x6: s->interrupt = 1; break;         /* INTERRUPT: sets IT1 */
         case 0x7:                                  /* RELOAD BORDER [+ DISPLAY] */
             s->bcr = (uint8_t)(w >> 16);
             if (w & 0x08000000u) {
@@ -399,5 +417,30 @@ void scc66470_render(const scc66470_t *v, const uint8_t *dram, uint32_t dram_siz
             else if (!ls) next = (dca_addr + (uint32_t)dca_insns * 4u) & VA_MASK;
         }
         line_start = next;
+    }
+}
+
+/* Vertical retrace: the ICA program runs; an INTERRUPT instruction in it
+ * sets IT1 (unless DI1 = CSR bit 15). The DCA programs are not scanned. */
+void scc66470_vretrace(scc66470_t *v, const uint8_t *dram, uint32_t dram_size)
+{
+    uint16_t dcr = v->dcr;
+    if (!((dcr >> 5) & 1) && !((dcr >> 4) & 1)) return;     /* no IC / DC */
+    vram_t m = { dram, (dram_size >= 0x100000u) ? VA_MASK : (dram_size - 1u) };
+    scc_frame_t scratch;
+    disp_state_t st;
+    memset(&st, 0, sizeof(st));
+    scratch.bep_count = 0;
+    st.out = &scratch;
+    st.vac = (((uint32_t)dcr & 0xFu) << 16) | v->vsr;
+    st.dcp = ((((uint32_t)v->dcr2 & 0xFu) << 16) | v->dcp) & 0xFFFFCu;
+    run_control(&st, &m, v->ica_pointer ? v->ica_pointer : ICA_POINTER, ICA_MAX_INSNS, CTX_ICA);
+    if (st.interrupt && !(v->csr_control & 0x8000u)) {
+        v->it1 = 1;
+        if (!v->it_logged && video_log_enabled()) {
+            fprintf(stderr, "[VIDEO] ICA %05X: INTERRUPT -> IT1 (IRQ level 5)\n",
+                    (unsigned)(v->ica_pointer ? v->ica_pointer : ICA_POINTER));
+            v->it_logged = 1;
+        }
     }
 }

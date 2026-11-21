@@ -160,12 +160,17 @@ int video_display_handle_event(const void *ev)
     case SDL_KEYUP: {
         if (e->key.windowID != window_id) return 0;
         int down = (e->type == SDL_KEYDOWN);
-        int step = (SDL_GetModState() & KMOD_SHIFT) ? 16 : 4;
+        /* Arrows: one impulse per key press / auto-repeat (relative move,
+         * as a CD-i thumbstick): EMU_IMPULSE units, x3 with Shift */
+        static int impulse = 0;
+        if (!impulse) { const char *e2 = getenv("EMU_IMPULSE"); impulse = (e2 && atoi(e2) > 0) ? atoi(e2) : 24; }
+        int step = (SDL_GetModState() & KMOD_SHIFT) ? impulse * 3 : impulse;
+        int dx = 0, dy = 0;
         switch (e->key.keysym.sym) {
-        case SDLK_LEFT:  if (down) ptr_x -= step * 2; break;
-        case SDLK_RIGHT: if (down) ptr_x += step * 2; break;
-        case SDLK_UP:    if (down) ptr_y -= step * 2; break;
-        case SDLK_DOWN:  if (down) ptr_y += step * 2; break;
+        case SDLK_LEFT:  dx = -step; break;
+        case SDLK_RIGHT: dx =  step; break;
+        case SDLK_UP:    dy = -step; break;
+        case SDLK_DOWN:  dy =  step; break;
         case SDLK_SPACE:
         case SDLK_RETURN:
         case SDLK_KP_ENTER:
@@ -175,6 +180,10 @@ int video_display_handle_event(const void *ev)
             if (down) ptr_buttons |= 2; else ptr_buttons &= ~2;
             break;
         default:
+            return 1;
+        }
+        if (dx || dy) {
+            if (down && pointer_cb) pointer_cb(pointer_ctx, dx, dy, ptr_buttons | VIDEO_PTR_IMPULSE);
             return 1;
         }
         pointer_report();
@@ -246,7 +255,12 @@ static void dump_frame_if_changed(int w, int h)
     if (hash == last_hash) return;
     last_hash = hash;
 
-    FILE *fp = fopen(path, "wb");
+    /* a "%d" in the name numbers the frames (f%04d.bmp -> f0000.bmp, ...) */
+    static int frame_no = 0;
+    char name[600];
+    if (strstr(path, "%")) snprintf(name, sizeof(name), path, frame_no++);
+    else                   snprintf(name, sizeof(name), "%s", path);
+    FILE *fp = fopen(name, "wb");
     if (!fp) return;
     int rowb = w * 3, pad = (4 - rowb % 4) % 4;
     uint32_t size = 54u + (uint32_t)(rowb + pad) * (uint32_t)h;
@@ -265,7 +279,7 @@ static void dump_frame_if_changed(int w, int h)
         fwrite("\0\0\0", 1, (size_t)pad, fp);
     }
     fclose(fp);
-    if (video_log_on()) fprintf(stderr, "[VIDEO] frame saved to %s\n", path);
+    if (video_log_on()) fprintf(stderr, "[VIDEO] frame saved to %s\n", name);
 }
 
 int video_display_update(void *scc66470, void *bus)
@@ -283,6 +297,34 @@ int video_display_update(void *scc66470, void *bus)
     scc66470_render(vb, b->dram, (uint32_t)sizeof(b->dram), frame_b);
     log_frame_changes('A', v,  frame);
     log_frame_changes('B', vb, frame_b);
+    /* EMU_VIDEO_LOG=2: also dump the ICA programs (non-BEP words) when the
+     * display start changes */
+    {
+        static uint32_t last_a = 0xFFFFFFFFu, last_b = 0xFFFFFFFFu;
+        const char *e = getenv("EMU_VIDEO_LOG");
+        if (e && atoi(e) >= 2) {
+            for (int pl = 0; pl < 2; pl++) {
+                const scc_frame_t *f = pl ? frame_b : frame;
+                uint32_t *last = pl ? &last_b : &last_a;
+                if (f->vsr_start == *last) continue;
+                *last = f->vsr_start;
+                uint32_t ica = pl ? 0x80400u : 0x400u;
+                fprintf(stderr, "[VIDEO %c] ICA @%05X:", pl ? 'B' : 'A', ica);
+                uint32_t ptr = ica;
+                for (int k = 0, n = 0; k < 400 && n < 48; k++) {
+                    const uint8_t *q = &b->dram[ptr & 0xFFFFCu];
+                    uint32_t w = ((uint32_t)q[0] << 24) | ((uint32_t)q[1] << 16) | ((uint32_t)q[2] << 8) | q[3];
+                    ptr += 4;
+                    if (w & 0x80000000u) continue;          /* skip BEP words */
+                    fprintf(stderr, " %08X", w);
+                    n++;
+                    if ((w >> 28) == 4) { ptr = w & 0xFFFFFu; fprintf(stderr, "->"); }   /* fetch follows VSR */
+                    if ((w >> 28) == 0 || (w >> 28) == 3 || (w >> 28) == 5) break;   /* STOP */
+                }
+                fprintf(stderr, "\n");
+            }
+        }
+    }
 
     /* Back-end processor: apply this frame's BEP CONTROL words in order
      * (both VSCs drive the V.S.D. command port) */
@@ -298,13 +340,19 @@ int video_display_update(void *scc66470, void *bus)
         memset(pixels, 0, (size_t)SCC_OUT_MAX_W * SCC_OUT_MAX_H * sizeof(uint32_t));
     } else {
         int wb = frame_b->width, hb = frame_b->height;
+        int dyuv_a = vsd_plane_dyuv(&vsd, 0), dyuv_b = vsd_plane_dyuv(&vsd, 1);
+        static uint32_t line_a[SCC_OUT_MAX_W], line_b[SCC_OUT_MAX_W];
         for (int y = 0; y < h; y++) {
             const uint8_t *src_a = &frame->pix[y * SCC_OUT_MAX_W];
             const uint8_t *src_b = &frame_b->pix[y * SCC_OUT_MAX_W];
             uint32_t *dst = &pixels[y * SCC_OUT_MAX_W];
+            /* DYUV planes are decoded a whole line at a time (delta coding) */
+            if (dyuv_a) vsd_dyuv_line(&vsd, 0, src_a, w, line_a);
+            if (dyuv_b && y < hb) vsd_dyuv_line(&vsd, 1, src_b, wb < w ? wb : w, line_b);
             for (int x = 0; x < w; x++) {
                 int b_on = frame_b->enabled && x < wb && y < hb;
-                dst[x] = vsd_mix(&vsd, src_a[x], frame->enabled, b_on ? src_b[x] : 0, b_on);
+                dst[x] = vsd_mix_rgb(&vsd, src_a[x], frame->enabled, dyuv_a ? &line_a[x] : NULL,
+                                     b_on ? src_b[x] : 0, b_on, (dyuv_b && b_on) ? &line_b[x] : NULL);
             }
         }
         vsd_draw_cursor(&vsd, pixels, w, h, SCC_OUT_MAX_W);

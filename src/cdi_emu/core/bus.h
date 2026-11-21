@@ -77,5 +77,9 @@ scc66470_t *bus_get_video_slave(bus_t *b);
 
 struct onchip68070;
 struct onchip68070 *bus_get_onchip(bus_t *b);
+struct cdic_s;
+struct cdic_s *bus_get_cdic(bus_t *b);
+extern uint32_t bus_watch_pc;        /* CPU PC, for EMU_WATCH reports */
+extern int      bus_watch_on;        /* EMU_WATCH active (after EMU_WATCH_AFTER steps) */
 
 #endif /* BUS_H */

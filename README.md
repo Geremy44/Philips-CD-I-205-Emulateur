@@ -31,23 +31,66 @@ Ce qui fonctionne :
 - **68HC05 (HLE)** : réponses aux requêtes de CD-RTOS, IRQ niveau 2,
   pointeur absolu (souris / clavier).
 - **NVRAM + horloge M48T08** : sauvegarde automatique, slots F5/F9.
+- **CDIC (lecteur CD)** : commandes du pilote `cdapdriv` (reset, TOC,
+  lecture mode 1 / mode 2 avec filtres fichier / canal, seek, update),
+  secteurs livrés à 75 par seconde dans les tampons de la RAM du CDIC
+  avec leur sous-code Q, interruption niveau 4. Images `.cue`/`.bin`
+  (2352 octets) et `.iso` (2048 octets). Le 68HC05 signale le disque à
+  CD-RTOS (`B0 00 02 15`). Les secteurs passent en mémoire par le **DMA
+  du 68070** (canal 1, `$80004000`), comme sur la vraie machine.
+- **Lancement d'un disque** : PLAY CD-I → `launcher` lit le label, le
+  répertoire et l'application, qui démarre. Testé avec *Astérix : Le Défi
+  de César* : intro Philips, logos Philips Interactive Media / Pathé /
+  Infogrames, dessin animé d'introduction (avec musique) et **écran titre**
+  du jeu (JOUER / REJOUER / RÈGLE / FIN) ; JOUER lance la partie.
+- **Vitesse réelle** : le temps émulé (cycles à 15 MHz) suit l'horloge du
+  PC ; trames vidéo à 50 Hz (lignes de 64 µs).
+- **Audio ADPCM CD-i** : les secteurs audio du canal choisi vont dans les
+  tampons audio du CDIC (`$2800`/`$3200`), sont décodés (niveaux A/B/C,
+  mono/stéréo, 37,8/18,9 kHz) et joués par SDL. La musique de l'intro
+  d'Astérix sort correctement.
+- **Interruption vidéo** : l'instruction INTERRUPT des programmes ICA lève
+  IT1 (niveau 5, autovecteur 61) à chaque trame — c'est le « top » dont
+  les jeux se servent pour se synchroniser.
+- **Reset par le 68HC05** (`$8A` sur `$200005`) : redémarrage à chaud après
+  un `F$Panic` / « Fatal System Error », comme le vrai lecteur.
 - **Vidéo** : les deux SCC66470 d'après leur datasheet (maître = plan A en
   DRAM banque 1, esclave = plan B en banque 2) — programmes ICA/DCA,
   fichiers bitmap / run-length / mosaïque en 4 et 8 bits/pixel, bordure,
   résolutions — puis le V.S.D. (palette CLUT 256 couleurs en 4 banques,
   codage CLUT7/CLUT8, clé de transparence par plan, ordre des plans,
-  superposition, curseur).
+  superposition, curseur) et décodage **DYUV** des images naturelles
+  (deltas quantifiés du Green Book, valeur de départ CA/CB, YUV → RGB),
+  facteurs de contribution DB/DC et mixage des plans (fondus).
+- **Sons en mémoire** (« ap ») : tampons `$2800`/`$3200` remplis par DMA,
+  lecture via AUDCTL/ABUF avec interruption (voix et bruitages des jeux).
+- **Pointeur relatif** : le 68HC05 applique les repositionnements du pilote
+  (`C0..` sur `$200001`) ; la souris donne des déplacements, les flèches des
+  impulsions (jeux qui lisent le pointeur comme une manette).
 
-Pas encore émulé : mixage pondéré des plans, DYUV/RGB555, interruptions
-UART/I²C, CDIC (lecture de disque), audio, afficheur de façade,
-cartouche FMV.
+Pas encore émulé : audio CD-DA, drapeaux de région (matte) et facteurs
+par région, bit T du RGB555 dans la transparence des plans, RGB555, valeurs de départ DYUV rechargées ligne
+par ligne, interruptions
+UART/I²C, éjection / changement de disque en cours de route, afficheur de
+façade, cartouche FMV.
+
+### Charger un disque
+
+```bash
+./cdi205 "chemin/vers/jeu.cue"
+```
+
+ou `EMU_DISC=chemin/vers/jeu.cue`. Sans image, le lecteur est vide et le
+menu propose OPEN. Formats : `.cue` + `.bin` (un seul fichier BIN, pistes
+MODE1/MODE2/AUDIO en 2352 octets), `.bin`/`.img` brut (une piste CD-i),
+`.iso` (secteurs de 2048 octets).
 
 ### Contrôles
 
 | Action | Touche / souris (fenêtre vidéo) |
 |---|---|
 | Déplacer le curseur CD-i | souris, ou flèches (Maj = plus vite) |
-| Bouton 1 / bouton 2 | clic gauche / droit, ou Espace-Entrée / Retour arrière |
+| Bouton 1 (valider) / bouton 2 | clic gauche / droit, ou Espace-Entrée / Retour arrière |
 | Sauvegarder NVRAM + horloge dans le slot courant | **F5** |
 | Rappeler le slot courant | **F9** |
 | Slot suivant (1 → 9) | **F6** |
@@ -73,6 +116,18 @@ cartouche FMV.
 | `EMU_TRACE=1`, `EMU_TRACE_MAX=n` | trace instruction par instruction |
 | `EMU_PC_POLL=n` | affiche le PC toutes les `n` instructions |
 | `EMU_SLAVE_LOG=1` | journalise le dialogue avec le 68HC05 |
+| `EMU_CDIC_LOG=1` | journalise les commandes et les secteurs du CDIC (`2` : chaque interruption) |
+| `EMU_DISC=jeu.cue` | image disque à charger (sinon 1er argument) |
+| `EMU_OS9_LOG=1` | trace les appels système OS-9 en erreur (`2` : tous) |
+| `EMU_EXC_LOG=1` | signale les exceptions CPU (erreur d'adresse, instruction illégale…) |
+| `EMU_UART_LOG=1` | recopie la console UART sur stderr |
+| `EMU_BREAK=1A96D0,1A9706` | à ces PC : 64 derniers PC, registres, pile, code |
+| `EMU_SPEED=100` | vitesse en % du vrai CD-i (`0` = sans limite) |
+| `EMU_AUDIO=0` / `EMU_AUDIO_DUMP=son.wav` | coupe le son / enregistre le son en WAV |
+| `EMU_WATCH=E5100-E5200`, `EMU_WATCH_AFTER=n` | signale les écritures dans cette plage (et si c'est le DMA) |
+| `EMU_DMA_LOG=1` | journalise chaque transfert DMA CDIC ↔ mémoire |
+| `EMU_INPUT_REC=f.rec` / `EMU_INPUT_PLAY=f.rec` | enregistre / rejoue souris et clics au pas près (tests reproductibles) |
+| `EMU_AUTOCLICK=x,y,pas` | clic automatique du bouton 1 (répété 8 fois) |
 | `EMU_NVRAM=nom` | fichiers NVRAM/horloge `nom.bin` / `nom.rtc` |
 
 ---
@@ -98,7 +153,7 @@ src/cdi_emu/
     │   ├── vsd.c/h           ← V.S.D. : palette, codage, transparence, plans, curseur
     │   └── video_display.c/h ← fenêtre vidéo SDL2
     ├── SLAVE/                ← co-processeur 68HC05 (HLE : requêtes, pointeur)
-    └── CDIC/                 ← contrôleur CD (stub)
+    └── CDIC/                 ← contrôleur CD (cdic.c) + images disque (disc.c)
 ```
 
 ---
@@ -142,8 +197,11 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 | SCC66470 : ICA/DCA, bitmap, run-length, mosaïque | ✅ Terminé (plan A) |
 | SCC66470 esclave (plan B) | ✅ Terminé |
 | V.S.D. : palette, transparence, ordre des plans, curseur | ✅ Terminé (superposition) |
-| V.S.D. : mixage pondéré, DYUV | 🔲 À démarrer |
-| Analyse CDIC | ⚠️ En cours |
+| V.S.D. : DYUV | ✅ Terminé |
+| V.S.D. : mixage pondéré, RGB555 | 🔲 À démarrer |
+| CDIC : commandes, TOC, lecture de secteurs | ✅ Terminé (à valider sur de vrais disques) |
+| CDIC : audio ADPCM (lecture disque) | ✅ Terminé |
+| CDIC : audio CD-DA, sons en mémoire (« ap ») | 🔲 À démarrer |
 | Émulation NVRAM + horloge (sauvegardes) | ✅ Terminé |
 | Entrées : pointeur via 68HC05 (HLE) | ✅ Terminé |
 | Afficheur de façade | 🔲 À démarrer |

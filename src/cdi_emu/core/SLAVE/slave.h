@@ -36,5 +36,9 @@ void    slave_push_input(slave_t *s, const uint8_t *report, int len);
 
 /* Link the HLE backend's UART injection callback */
 void slave_hle_set_uart(slave_backend_t *be, uart_inject_fn fn, void *bus);
+/* Disc in the drive (1) or not (0): the HLE reports it with B0 messages */
+void slave_hle_set_disc(slave_backend_t *be, int present, int notify);
+/* 1 once if the CPU asked the 68HC05 for a reset ($8A on $200005) */
+int  slave_hle_take_reset(slave_backend_t *be);
 
 #endif /* SLAVE_H */

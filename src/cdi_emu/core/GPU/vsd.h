@@ -12,6 +12,7 @@
  *   C3      CLUT bank (0..3)
  *   C4/C6   transparent colour A/B,  C7/C9 mask colour A/B
  *   CD/CE/CF cursor position / control / pattern row
+ *   CA/CB   DYUV start value A/B (Y in bits 23-16, U 15-8, V 7-0)
  *   D8      backdrop colour,  DB/DC weight A/B
  * Only what the 205 boot and the CD-RTOS shell use is interpreted; the
  * encoding is inferred from the firmware traces (see VSD_NOTES in vsd.c).
@@ -31,6 +32,7 @@ typedef struct vsd {
     uint32_t transp_a, transp_b, mask_a, mask_b;
     uint32_t backdrop;
     uint32_t weight_a, weight_b;
+    uint32_t dyuv_start_a, dyuv_start_b;   /* Y:U:V start of each line */
     uint32_t cursor_pos, cursor_ctrl;
     uint16_t cursor_pat[16];
     uint32_t unknown_count;    /* commands not interpreted */
@@ -42,6 +44,19 @@ void     vsd_command(vsd_t *v, uint32_t word);
 /* Combine plane A (master VSC, V7..V0) and plane B (slave VSC, V15..V8)
  * pixel values into ARGB8888. a_on / b_on: that VSC is displaying (DE). */
 uint32_t vsd_mix(const vsd_t *v, uint8_t a, int a_on, uint8_t b, int b_on);
+
+/* Same, with an already decoded RGB for a plane coded in DYUV
+ * (rgb_a / rgb_b = NULL when that plane uses a CLUT coding) */
+uint32_t vsd_mix_rgb(const vsd_t *v, uint8_t a, int a_on, const uint32_t *rgb_a,
+                     uint8_t b, int b_on, const uint32_t *rgb_b);
+
+/* 1 if plane A (0) / B (1) is coded in DYUV (ICM = 5) */
+int      vsd_plane_dyuv(const vsd_t *v, int plane_b);
+
+/* Decode one DYUV line. src = output pixels of the VSC (4-bit pixel units:
+ * one 8-bit pixel is 2 output pixels wide), w = width in output pixels.
+ * Writes w RGB 8:8:8 values to out. */
+void     vsd_dyuv_line(const vsd_t *v, int plane_b, const uint8_t *src, int w, uint32_t *out);
 
 /* Overlay the hardware cursor on an ARGB frame (w x h, row pitch in pixels) */
 void     vsd_draw_cursor(const vsd_t *v, uint32_t *argb, int w, int h, int pitch);

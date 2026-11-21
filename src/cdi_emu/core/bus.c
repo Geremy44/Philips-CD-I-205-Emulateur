@@ -75,9 +75,82 @@ static cdic_t     g_cdic;
 /* SCC68070 on-chip timer + interrupt priority registers */
 static onchip68070_t g_onchip;
 onchip68070_t *bus_get_onchip(bus_t *b) { (void)b; return &g_onchip; }
+cdic_t        *bus_get_cdic(bus_t *b)   { (void)b; return &g_cdic; }
 
 /* Shadow array for I/O registers not handled by specific devices */
 static uint8_t io_regs[IO_SIZE];
+
+/* EMU_WATCH=start-end (hex): report the first writes into that range, with
+ * the CPU PC (bus_watch_pc) and whether the CDIC DMA did it */
+uint32_t bus_watch_pc = 0;
+int      bus_watch_on = 1;           /* main clears it until EMU_WATCH_AFTER */
+static uint32_t watch_lo = 1, watch_hi = 0;
+static int watch_left = 40, watch_init = 0, in_dma = 0;
+static void watch(uint32_t addr, uint32_t v, int size)
+{
+    if (!watch_init) {
+        watch_init = 1;
+        const char *e = getenv("EMU_WATCH");
+        if (e) sscanf(e, "%x-%x", &watch_lo, &watch_hi);
+    }
+    if (bus_watch_on && addr >= watch_lo && addr <= watch_hi && watch_left > 0) {
+        watch_left--;
+        fprintf(stderr, "[WATCH] W%d %06X = %0*X  pc=%06X%s\n", size, addr, size / 4, v,
+                bus_watch_pc, in_dma ? " (CDIC DMA)" : "");
+    }
+}
+
+/* ===== SCC68070 DMA controller, channel 1 ($80004000) <-> CDIC =====
+ * Used by cdapdriv ($1A961A): CSR=$FF (clear), MAR (+$0C) = destination,
+ * MTC (+$0A) = words, OCR (+$05) $92 = device -> memory, CCR (+$07) $80 =
+ * start, then CDIC DMACTL ($303FF8) = buffer offset | $8000 (| $4000 for
+ * memory -> CDIC). The driver polls CSR bit 7 (COC), then checks bit 4
+ * (ERR) and reads the advanced MAR back. CSR bits are "write 1 to clear";
+ * bit 3 (channel active) must read 0 before a new transfer. */
+#define DMA1      0x4000u           /* offset of channel 1 in io_regs */
+#define DMA_CSR   0x00
+#define DMA_CER   0x01
+#define DMA_OCR   0x05
+#define DMA_CCR   0x07
+#define DMA_MTC   0x0A
+#define DMA_MAR   0x0C
+
+static int is_dma_csr(uint32_t addr)
+{
+    return addr == IO_BASE + DMA1 + DMA_CSR || addr == IO_BASE + DMA1 + 0x40 + DMA_CSR;
+}
+
+static void cdic_dma(bus_t *b, uint16_t ctl)
+{
+    uint8_t *r = &io_regs[DMA1];
+    if (!(ctl & 0x8000)) return;
+    if (!(r[DMA_CCR] & 0x80)) {
+        fprintf(stderr, "[DMA] CDIC DMACTL=%04X but channel 1 not started\n", ctl);
+        return;
+    }
+    uint32_t mtc = ((uint32_t)r[DMA_MTC] << 8) | r[DMA_MTC + 1];
+    uint32_t mar = ((uint32_t)r[DMA_MAR] << 24) | ((uint32_t)r[DMA_MAR + 1] << 16)
+                 | ((uint32_t)r[DMA_MAR + 2] << 8) | r[DMA_MAR + 3];
+    uint32_t off = ctl & 0x3FFE;
+    int to_cdic = (ctl & 0x4000) != 0;
+    in_dma = 1;
+    if (getenv("EMU_DMA_LOG"))
+        fprintf(stderr, "[DMA] %s %u words, CDIC +%04X %s MAR %06X (pc=%06X)\n",
+                to_cdic ? "mem->CDIC" : "CDIC->mem", mtc, off, to_cdic ? "<-" : "->", mar, bus_watch_pc);
+    for (uint32_t n = 0; n < mtc; n++) {
+        uint32_t c = CDIC_RAM_BASE + ((off + 2 * n) & 0x3FFE);
+        if (to_cdic) cdic_write16(&g_cdic, c, bus_read16(b, mar));
+        else         bus_write16(b, mar, cdic_read16(&g_cdic, c));
+        mar += 2;
+    }
+    r[DMA_MAR] = (uint8_t)(mar >> 24); r[DMA_MAR + 1] = (uint8_t)(mar >> 16);
+    r[DMA_MAR + 2] = (uint8_t)(mar >> 8); r[DMA_MAR + 3] = (uint8_t)mar;
+    in_dma = 0;
+    r[DMA_MTC] = r[DMA_MTC + 1] = 0;
+    r[DMA_CCR] &= 0x7F;                       /* operation done */
+    r[DMA_CSR] = (uint8_t)((r[DMA_CSR] | 0x80) & ~0x18);   /* COC, not active, no error */
+    r[DMA_CER] = 0;
+}
 
 /* Accessor for uart.c to read/write the raw I/O shadow array */
 uint8_t *uart_io_regs_ptr(void) { return io_regs; }
@@ -330,7 +403,7 @@ uint8_t bus_read8(bus_t *b, uint32_t addr) {
 
     /* CDIC RAM */
     if (cdic_is_ram(addr))
-        return cdic_ram_read8(&g_cdic, addr);
+        return cdic_read8(&g_cdic, addr);
 
     /* SCC66470 video controller registers */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
@@ -385,9 +458,8 @@ uint16_t bus_read16(bus_t *b, uint32_t addr) {
         return ((uint16_t)bus_read8(b, addr) << 8) | bus_read8(b, addr + 1);
 
     /* CDIC 16-bit register access */
-    if (addr >= 0x300000 && addr <= 0x303FFF) {
-        return cdic_read16(addr);
-    }
+    if (cdic_is_ram(addr))
+        return cdic_read16(&g_cdic, addr);
 
     /* DRAM (big-endian) */
     if (is_dram(addr)) {
@@ -418,9 +490,14 @@ uint32_t bus_read32(bus_t *b, uint32_t addr) {
 }
 
 void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
+    watch(addr, v, 8);
 
     /* CDIC RAM */
-    if (cdic_is_ram(addr)) { cdic_ram_write8(&g_cdic, addr, v); return; }
+    if (cdic_is_ram(addr)) {
+        cdic_write8(&g_cdic, addr, v);
+        if ((addr & 0x3FFF) == 0x3FF9) cdic_dma(b, cdic_read16(&g_cdic, addr & ~1u));
+        return;
+    }
 
     /* SCC66470 video controller registers */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {
@@ -440,6 +517,7 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
     /* General I/O registers (includes UART sub-range) */
     if (addr >= IO_BASE && addr < (IO_BASE + IO_SIZE)) {
         if (onchip68070_handles(addr)) { onchip68070_write8(&g_onchip, addr, v); return; }
+        if (is_dma_csr(addr)) { io_regs[addr - IO_BASE] &= (uint8_t)~v; return; }  /* write 1 to clear */
         if ((addr & 0xFFFF00) == 0x002000) { uart_write8(b, addr, v); return; }
         io_regs[addr - IO_BASE] = v;
         return;
@@ -459,6 +537,14 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
 }
 
 void bus_write16(bus_t *b, uint32_t addr, uint16_t v) {
+    watch(addr, v, 16);
+
+    /* CDIC RAM and registers */
+    if (cdic_is_ram(addr)) {
+        cdic_write16(&g_cdic, addr, v);
+        if ((addr & 0x3FFE) == 0x3FF8) cdic_dma(b, v);
+        return;
+    }
 
     /* SCC66470 video controller 16-bit registers */
     if (addr >= 0x1FFFC0 && addr <= 0x1FFFFF) {

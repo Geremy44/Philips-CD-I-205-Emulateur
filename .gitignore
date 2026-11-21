@@ -102,3 +102,10 @@ yarn-error.log*
 *.trace
 output/
 dump/
+
+# Images de jeux CD-i (jamais dans git)
+CDI-205/Games/
+*.cue
+*.chd
+# Sons extraits des jeux (EMU_AUDIO_DUMP)
+*.wav

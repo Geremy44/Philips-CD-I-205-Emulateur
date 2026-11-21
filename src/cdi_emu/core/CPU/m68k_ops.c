@@ -23,6 +23,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "m68k_ops.h"
 #include "m68k_ea.h"
@@ -182,6 +183,59 @@ static void push32(m68k_t *cpu, uint32_t val)
  * ================================================================ */
 
 /* ADDX / SUBX: Dy,Dx or -(Ay),-(Ax). Z is only cleared (never set). */
+/* ---- BCD arithmetic (ABCD / SBCD / NBCD) ----
+ * X and C = decimal carry/borrow, Z cleared if the result is non-zero
+ * (unchanged otherwise), N = bit 7, V cleared. */
+static uint8_t bcd_add(m68k_t *cpu, uint8_t src, uint8_t dst)
+{
+    unsigned x = (cpu->sr & SR_X) ? 1u : 0u;
+    unsigned res = (src & 0x0Fu) + (dst & 0x0Fu) + x;
+    if (res > 9) res += 6;
+    res += (src & 0xF0u) + (dst & 0xF0u);
+    int carry = res > 0x99;
+    if (carry) res -= 0xA0;
+    res &= 0xFF;
+    cpu->sr &= ~(SR_C | SR_X | SR_V | SR_N);
+    if (carry) cpu->sr |= SR_C | SR_X;
+    if (res & 0x80) cpu->sr |= SR_N;
+    if (res) cpu->sr &= ~SR_Z;
+    return (uint8_t)res;
+}
+
+static uint8_t bcd_sub(m68k_t *cpu, uint8_t src, uint8_t dst)   /* dst - src - X */
+{
+    unsigned x = (cpu->sr & SR_X) ? 1u : 0u;
+    unsigned res = (dst & 0x0Fu) - (src & 0x0Fu) - x;
+    if (res > 9) res -= 6;
+    res += (dst & 0xF0u) - (src & 0xF0u);
+    int borrow = res > 0x99;
+    if (borrow) res += 0xA0;
+    res &= 0xFF;
+    cpu->sr &= ~(SR_C | SR_X | SR_V | SR_N);
+    if (borrow) cpu->sr |= SR_C | SR_X;
+    if (res & 0x80) cpu->sr |= SR_N;
+    if (res) cpu->sr &= ~SR_Z;
+    return (uint8_t)res;
+}
+
+/* ABCD/SBCD Dy,Dx or -(Ay),-(Ax): ry = bits 2..0 (source), rx = bits 11..9 */
+static void op_bcd2(m68k_t *cpu, uint16_t insn, int sub)
+{
+    int rx = (insn >> 9) & 7, ry = insn & 7;
+    if (insn & 0x0008) {                                   /* -(Ay),-(Ax) */
+        cpu->a[ry] -= (ry == 7) ? 2 : 1;
+        uint8_t src = m68k_read8(cpu, cpu->a[ry]);
+        cpu->a[rx] -= (rx == 7) ? 2 : 1;
+        uint8_t dst = m68k_read8(cpu, cpu->a[rx]);
+        uint8_t r = sub ? bcd_sub(cpu, src, dst) : bcd_add(cpu, src, dst);
+        bus_write8(cpu->bus, cpu->a[rx], r);
+    } else {
+        uint8_t src = (uint8_t)cpu->d[ry], dst = (uint8_t)cpu->d[rx];
+        uint8_t r = sub ? bcd_sub(cpu, src, dst) : bcd_add(cpu, src, dst);
+        cpu->d[rx] = (cpu->d[rx] & 0xFFFFFF00u) | r;
+    }
+}
+
 static void op_addx_subx(m68k_t *cpu, uint16_t insn, int is_sub)
 {
     int size = ((insn >> 6) & 3) == 0 ? 8 : ((insn >> 6) & 3) == 1 ? 16 : 32;
@@ -244,6 +298,16 @@ void m68k_set_sr(m68k_t *cpu, uint16_t new_sr)
 void m68k_exception(m68k_t *cpu, int vector)
 {
     uint16_t old_sr = cpu->sr;
+
+    /* EMU_EXC_LOG=1: report error exceptions (bus/address error, illegal,
+     * divide by zero, CHK, TRAPV, privilege, line A/F) */
+    {
+        static int log = -1;
+        if (log < 0) { const char *e = getenv("EMU_EXC_LOG"); log = (e && *e) ? atoi(e) : 0; }
+        if (log && ((vector >= 2 && vector <= 11) || (vector >= 33 && vector <= 47 && log >= 2)))
+            fprintf(stderr, "[EXC] vector %d at PC=%06X (SR=%04X, opcode %04X)\n", vector,
+                    (unsigned)cpu->pc, old_sr, bus_read16(cpu->bus, cpu->pc));
+    }
 
     /* Supervisor state, trace off */
     m68k_set_sr(cpu, (uint16_t)((old_sr | 0x2000) & ~0x8000));
@@ -476,6 +540,28 @@ void m68k_step_ops(m68k_t *cpu)
             uint16_t imm = m68k_read16(cpu, cpu->pc);
             cpu->pc += 2;
             m68k_set_sr(cpu, cpu->sr ^ imm);
+            return;
+        }
+
+        /* --- MOVEP: 0000 ddd 1 oo 001 aaa (same encoding as a dynamic bit
+         * operation with An, which does not exist): bytes at d16(Ay),
+         * d16+2(Ay)... <-> Dx, high byte first. oo: 00 .W mem->reg,
+         * 01 .L mem->reg, 10 .W reg->mem, 11 .L reg->mem */
+        if ((insn & 0xF138) == 0x0108) {
+            int dx = (insn >> 9) & 7, ay = insn & 7, om = (insn >> 6) & 3;
+            uint32_t addr = cpu->a[ay] + (uint32_t)(int32_t)(int16_t)m68k_read16(cpu, cpu->pc);
+            cpu->pc += 2;
+            int n = (om & 1) ? 4 : 2;
+            if (om & 2) {
+                for (int k = 0; k < n; k++)
+                    bus_write8(cpu->bus, addr + 2u * (uint32_t)k,
+                               (uint8_t)(cpu->d[dx] >> (8 * (n - 1 - k))));
+            } else {
+                uint32_t v = 0;
+                for (int k = 0; k < n; k++) v = (v << 8) | m68k_read8(cpu, addr + 2u * (uint32_t)k);
+                if (n == 2) cpu->d[dx] = (cpu->d[dx] & 0xFFFF0000u) | v;
+                else        cpu->d[dx] = v;
+            }
             return;
         }
 
@@ -816,14 +902,22 @@ void m68k_step_ops(m68k_t *cpu)
             cpu->sr = (cpu->sr & ~(SR_N|SR_V|SR_C)) | SR_Z;
             return;
         }
-        /* TST <ea> - Test (set N,Z flags) */
-        if ((insn & 0xFF00) == 0x4A00) {
+        /* TST <ea> - Test (set N,Z flags). Size 11 is TAS / ILLEGAL (below). */
+        if ((insn & 0xFF00) == 0x4A00 && ((insn >> 6) & 3) != 3) {
             int size = ((insn >> 6) & 3) == 0 ? 8
                      : ((insn >> 6) & 3) == 1 ? 16 : 32;
             uint32_t v = ea_read(cpu, ea_mode, ea_reg, size);
             flag_NZ_clearVC(&cpu->sr, v, size);
             return;
         }
+        /* NBCD <ea> - 0 - <ea> - X in decimal */
+        if ((insn & 0xFFC0) == 0x4800) {
+            int m = (insn >> 3) & 7, r = insn & 7;
+            uint8_t v = (uint8_t)ea_read_rmw(cpu, m, r, 8);
+            ea_write_rmw(cpu, m, r, 8, bcd_sub(cpu, v, 0));
+            return;
+        }
+
         /* SWAP Dn - Swap upper and lower 16-bit halves */
         if ((insn & 0xFFF8) == 0x4840) {
             uint32_t v = cpu->d[insn & 7];
@@ -909,6 +1003,22 @@ void m68k_step_ops(m68k_t *cpu)
                     }
                 }
             }
+            return;
+        }
+        /* ILLEGAL: illegal instruction exception */
+        if (insn == 0x4AFC) {
+            cpu->pc -= 2;
+            m68k_exception(cpu, 4);
+            return;
+        }
+        /* TAS <ea>: test the byte (N, Z), clear V/C, then set its bit 7 */
+        if ((insn & 0xFFC0) == 0x4AC0) {
+            int m = (insn >> 3) & 7, r = insn & 7;
+            uint8_t v = (uint8_t)ea_read_rmw(cpu, m, r, 8);
+            cpu->sr &= ~(SR_N | SR_Z | SR_V | SR_C);
+            if (v & 0x80) cpu->sr |= SR_N;
+            if (!v)       cpu->sr |= SR_Z;
+            ea_write_rmw(cpu, m, r, 8, v | 0x80);
             return;
         }
         fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0x4 misc-jmp-jsr)", insn, cpu->pc - 2);
@@ -1038,9 +1148,7 @@ void m68k_step_ops(m68k_t *cpu)
         }
 
         if (opmode == 4 && ea_mode <= 1) {        /* SBCD */
-            fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0x8 sbcd)\n",
-                    insn, cpu->pc - 2);
-            cpu->halted = 1;
+            op_bcd2(cpu, insn, 1);
             return;
         }
 
@@ -1175,10 +1283,9 @@ void m68k_step_ops(m68k_t *cpu)
             cpu->sr &= ~(SR_V | SR_C);
             return;
         }
-        /* ABCD - Add binary coded decimal (not implemented) */
+        /* ABCD - Add binary coded decimal */
         if ((insn & 0x01F0) == 0x0100) {
-            fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0xC abcd)\n", insn, cpu->pc - 2);
-            cpu->halted = 1;
+            op_bcd2(cpu, insn, 0);
             return;
         }
         /* EXG - Exchange two registers */
@@ -1293,10 +1400,40 @@ void m68k_step_ops(m68k_t *cpu)
      * ================================================================ */
     case 0xE:
         if (((insn >> 6) & 3) == 3) {
-            /* Memory shift form (shift 1 bit on EA): not implemented */
-            fprintf(stderr, "[M68K] OPCODE NON IMPLEMENTE: 0x%04X @ PC=0x%08X (case=0xE shift-mem)",
-                    insn, cpu->pc - 2);
-            cpu->halted = 1;
+            /* Memory shift/rotate: one bit, word size, on <ea>
+             * bits 10-9: 00 AS, 01 LS, 10 ROX, 11 RO; bit 8: 1 = left */
+            int type = (insn >> 9) & 3, left = (insn >> 8) & 1;
+            int m = (insn >> 3) & 7, r = insn & 7;
+            uint16_t v = (uint16_t)ea_read_rmw(cpu, m, r, 16);
+            uint16_t res;
+            int out = left ? (v >> 15) & 1 : v & 1;            /* bit shifted out */
+            int x = (cpu->sr & SR_X) ? 1 : 0;
+            int ovf = 0;
+            switch (type) {
+            case 0:  /* ASL / ASR */
+                if (left) { res = (uint16_t)(v << 1); ovf = ((v ^ res) & 0x8000) != 0; }
+                else      res = (uint16_t)((v >> 1) | (v & 0x8000));
+                break;
+            case 1:  /* LSL / LSR */
+                res = left ? (uint16_t)(v << 1) : (uint16_t)(v >> 1);
+                break;
+            case 2:  /* ROXL / ROXR */
+                res = left ? (uint16_t)((v << 1) | x) : (uint16_t)((v >> 1) | (x << 15));
+                break;
+            default: /* ROL / ROR */
+                res = left ? (uint16_t)((v << 1) | out) : (uint16_t)((v >> 1) | (out << 15));
+                break;
+            }
+            ea_write_rmw(cpu, m, r, 16, res);
+            cpu->sr &= ~(SR_N | SR_Z | SR_V | SR_C);
+            if (res & 0x8000) cpu->sr |= SR_N;
+            if (!res)         cpu->sr |= SR_Z;
+            if (ovf)          cpu->sr |= SR_V;
+            if (out)          cpu->sr |= SR_C;
+            if (type != 3) {                                    /* X = C, except ROL/ROR */
+                cpu->sr &= ~SR_X;
+                if (out) cpu->sr |= SR_X;
+            }
         } else {
             /* Register shift form */
             op_shift_reg(cpu, insn);
