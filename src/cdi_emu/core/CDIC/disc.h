@@ -3,7 +3,9 @@
  *
  * Accepted images:
  *   .cue + .bin  raw 2352-byte sectors (MODE1/2352, MODE2/2352, AUDIO),
- *                one or several tracks in a single BIN file
+ *                tracks in one BIN file or one BIN per track (audio CDs);
+ *                a "data" track without the CD-ROM sync pattern is in fact
+ *                CD-DA (badly ripped audio CDs) and is played as audio
  *   .bin / .img  raw 2352-byte sectors, a single CD-i (mode 2) track
  *   .iso         cooked 2048-byte mode 1 sectors (header synthesized)
  *
@@ -23,11 +25,14 @@ typedef struct {
     int     number;        /* 1..99 */
     int     audio;         /* 1 = CD-DA track */
     int     start;         /* LBA of INDEX 01 */
-    int64_t file_offset;   /* byte offset of that sector in the image */
+    int     file;          /* index in disc_t.files */
+    int64_t file_offset;   /* byte offset of that sector in its file */
 } disc_track_t;
 
 typedef struct {
-    FILE        *f;
+    FILE        *f;              /* first image file (NULL = no disc) */
+    FILE        *files[DISC_MAX_TRACKS];
+    int          nfiles;
     int          sector_size;    /* 2352 (raw) or 2048 (iso) */
     int          ntracks;
     disc_track_t track[DISC_MAX_TRACKS];

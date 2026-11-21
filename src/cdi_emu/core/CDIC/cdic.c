@@ -82,6 +82,13 @@ void cdic_eject(cdic_t *c)
 
 int cdic_has_disc(const cdic_t *c) { return disc_present(&c->disc); }
 
+/* 0 = no disc, 1 = CD-i (data first track), 2 = audio CD */
+int cdic_disc_kind(const cdic_t *c)
+{
+    if (!disc_present(&c->disc)) return 0;
+    return c->disc.track[0].audio ? 2 : 1;
+}
+
 void cdic_set_audio(cdic_t *c, cdic_audio_cb cb, void *ctx)
 {
     c->audio_cb = cb;
@@ -165,6 +172,24 @@ static void deliver_toc(cdic_t *c)
     c->buffer ^= 1;
 }
 
+/* CD-DA sector (588 stereo frames at 44.1 kHz, 16-bit little-endian) to
+ * the audio output, which runs at 37.8 kHz: 504 frames (exactly 6/7),
+ * by linear interpolation. */
+static void cdda_play(cdic_t *c, const uint8_t *raw)
+{
+    static int16_t in[2 * 589], out[2 * 504];
+    for (int i = 0; i < 2 * 588; i++)
+        in[i] = (int16_t)(raw[2 * i] | (raw[2 * i + 1] << 8));
+    in[2 * 588] = in[2 * 587]; in[2 * 588 + 1] = in[2 * 587 + 1];
+    for (int k = 0; k < 504; k++) {
+        int pos7 = k * 7;                         /* source position x6 */
+        int i = pos7 / 6, fr = pos7 % 6;
+        for (int ch = 0; ch < 2; ch++)
+            out[2 * k + ch] = (int16_t)((in[2 * i + ch] * (6 - fr) + in[2 * (i + 1) + ch] * fr) / 6);
+    }
+    if (c->audio_cb) c->audio_cb(c->audio_ctx, out, 504);
+}
+
 /* One sector time of a read / play / seek command */
 static void deliver_sector(cdic_t *c)
 {
@@ -172,6 +197,14 @@ static void deliver_sector(cdic_t *c)
     int lba = c->lba++;
     int t = disc_read(&c->disc, lba, raw);
     int mode = raw[15];
+
+    /* Play CD-DA: the audio goes to the DAC; the driver still gets each
+     * sector's Q subcode (track / time) through the data buffers. */
+    if (c->run_cmd == 0x28 && t >= 0 && c->disc.track[t].audio) {
+        cdda_play(c, raw);
+        if (c->log && (c->delivered < 4 || c->delivered % 750 == 0))
+            cdic_logf(c, "CD-DA LBA %d (track %d) #%ld\n", lba, c->disc.track[t].number, c->delivered);
+    }
 
     if (c->run_cmd == 0x2A && mode == 2) {
         uint8_t file = raw[16], chan = raw[17] & 0x1F, sm = raw[18];
@@ -211,7 +244,13 @@ static void deliver_sector(cdic_t *c)
     }
 
     int buf = c->buffer;
-    memcpy(c->ram + buf * 0xA00, raw + 12, 0x924);
+    if (c->run_cmd == 0x28 && t >= 0 && c->disc.track[t].audio)
+        /* CD-DA: the samples went to the DAC; the buffer carries no data
+         * (the shell reads CD+G subcode packets there: PCM in it showed
+         * random "graphics", a coloured screen with a 0..12 channel bar) */
+        memset(c->ram + buf * 0xA00, 0, 0x924);
+    else
+        memcpy(c->ram + buf * 0xA00, raw + 12, 0x924);
     uint8_t q[12];
     q_program(c, lba, t, q);
     put_q(c, buf, q);

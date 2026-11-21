@@ -67,6 +67,8 @@ static int open_plain(disc_t *d, const char *path, int sector_size)
 {
     d->f = fopen_u8(path, "rb");
     if (!d->f) return -1;
+    d->files[0] = d->f;
+    d->nfiles = 1;
     int64_t n = file_size(d->f);
     d->sector_size = sector_size;
     d->ntracks = 1;
@@ -78,20 +80,32 @@ static int open_plain(disc_t *d, const char *path, int sector_size)
     return 0;
 }
 
+/* Sector holds the CD-ROM sync pattern (00 FF x10 00)? */
+static int has_sync(FILE *f, int64_t off)
+{
+    uint8_t s[12];
+    static const uint8_t sync[12] = { 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0 };
+    if (_fseeki64(f, off, SEEK_SET) != 0 || fread(s, 1, 12, f) != 12) return 1;
+    return memcmp(s, sync, 12) == 0;
+}
+
 static int open_cue(disc_t *d, const char *cue)
 {
     FILE *c = fopen_u8(cue, "r");
     if (!c) return -1;
-    char line[1024], bin[1100] = "";
-    int cur = -1, nfiles = 0, sector = DISC_RAW;
+    char line[1024];
+    int cur = -1, sector = DISC_RAW;
+    int file_base = 0;                 /* LBA of the current FILE's first sector */
 
     while (fgets(line, sizeof(line), c)) {
         char *p = line;
         while (isspace((unsigned char)*p)) p++;
         if (!strncmp(p, "FILE", 4)) {
-            if (++nfiles > 1) continue;              /* only one BIN supported */
+            if (d->nfiles > 0)            /* next file starts after the previous one */
+                file_base += (int)(file_size(d->files[d->nfiles - 1]) / sector);
+            if (d->nfiles >= DISC_MAX_TRACKS) break;
             char *q1 = strchr(p, '"'), *q2 = q1 ? strchr(q1 + 1, '"') : NULL;
-            char name[540];
+            char name[540], bin[1100];
             if (q1 && q2) { size_t l = (size_t)(q2 - q1 - 1); memcpy(name, q1 + 1, l); name[l] = 0; }
             else if (sscanf(p + 4, "%511s", name) != 1) continue;
             /* relative to the .cue directory */
@@ -101,30 +115,38 @@ static int open_cue(disc_t *d, const char *cue)
                 snprintf(bin, sizeof(bin), "%.*s%s", (int)(sl - cue + 1), cue, name);
             else
                 snprintf(bin, sizeof(bin), "%s", name);
-        } else if (!strncmp(p, "TRACK", 5) && nfiles == 1) {
+            FILE *f = fopen_u8(bin, "rb");
+            if (!f) { fprintf(stderr, "[DISC] cannot open '%s'\n", bin); fclose(c); return -1; }
+            d->files[d->nfiles++] = f;
+        } else if (!strncmp(p, "TRACK", 5) && d->nfiles > 0) {
             int num; char mode[32] = "";
             if (sscanf(p + 5, "%d %31s", &num, mode) < 1 || d->ntracks >= DISC_MAX_TRACKS) continue;
             cur = d->ntracks++;
             d->track[cur].number = num;
             d->track[cur].audio = !strncmp(mode, "AUDIO", 5);
+            d->track[cur].file = d->nfiles - 1;
+            d->track[cur].start = file_base;
             if (strstr(mode, "/2048")) sector = 2048;
-        } else if (!strncmp(p, "INDEX", 5) && cur >= 0 && nfiles == 1) {
+        } else if (!strncmp(p, "INDEX", 5) && cur >= 0) {
             int idx, m, s, f;
             if (sscanf(p + 5, "%d %d:%d:%d", &idx, &m, &s, &f) == 4 && idx == 1) {
                 int frames = (m * 60 + s) * 75 + f;
-                d->track[cur].start = frames;
+                d->track[cur].start = file_base + frames;
                 d->track[cur].file_offset = (int64_t)frames * sector;
             }
         }
     }
     fclose(c);
-    if (nfiles > 1)
-        fprintf(stderr, "[DISC] warning: %d FILE entries in the .cue, only the first is used\n", nfiles);
-    if (!bin[0] || d->ntracks == 0) return -1;
-    d->f = fopen_u8(bin, "rb");
-    if (!d->f) { fprintf(stderr, "[DISC] cannot open '%s'\n", bin); return -1; }
+    if (d->nfiles == 0 || d->ntracks == 0) return -1;
+    d->f = d->files[0];
     d->sector_size = sector;
-    d->leadout = (int)(file_size(d->f) / sector);
+    d->leadout = file_base + (int)(file_size(d->files[d->nfiles - 1]) / sector);
+    /* "MODE2" track that is really CD-DA (no sync pattern): play it as audio */
+    for (int i = 0; i < d->ntracks && sector == DISC_RAW; i++)
+        if (!d->track[i].audio && !has_sync(d->files[d->track[i].file], d->track[i].file_offset)) {
+            d->track[i].audio = 1;
+            fprintf(stderr, "[DISC] track %02d has no CD-ROM sync: audio (CD-DA)\n", d->track[i].number);
+        }
     return 0;
 }
 
@@ -137,6 +159,10 @@ int disc_open(disc_t *d, const char *path)
     else if (ext_is(path, "iso")) r = open_plain(d, path, 2048);
     else                          r = open_plain(d, path, DISC_RAW);
     if (r != 0) { disc_close(d); memset(d, 0, sizeof(*d)); return -1; }
+    if (!ext_is(path, "cue") && d->sector_size == DISC_RAW && !has_sync(d->f, 0)) {
+        d->track[0].audio = 1;                       /* raw .bin of an audio CD */
+        fprintf(stderr, "[DISC] no CD-ROM sync: audio CD image (one track)\n");
+    }
     snprintf(d->path, sizeof(d->path), "%s", path);
     fprintf(stderr, "[DISC] '%s': %d track(s), lead-out LBA %d, %d-byte sectors\n",
             path, d->ntracks, d->leadout, d->sector_size);
@@ -148,7 +174,9 @@ int disc_open(disc_t *d, const char *path)
 
 void disc_close(disc_t *d)
 {
-    if (d->f) fclose(d->f);
+    for (int i = 0; i < d->nfiles; i++)
+        if (d->files[i]) fclose(d->files[i]);
+    d->nfiles = 0;
     d->f = NULL;
     d->ntracks = 0;
 }
@@ -180,11 +208,12 @@ int disc_read(disc_t *d, int lba, uint8_t out[DISC_RAW])
         return -1;
     }
     int64_t off = d->track[t].file_offset + (int64_t)(lba - d->track[t].start) * d->sector_size;
-    if (_fseeki64(d->f, off, SEEK_SET) != 0) { header(out, lba, 2); return -1; }
+    FILE *f = d->files[d->track[t].file];
+    if (_fseeki64(f, off, SEEK_SET) != 0) { header(out, lba, 2); return -1; }
     if (d->sector_size == 2048) {
         header(out, lba, 1);
-        if (fread(out + 16, 1, 2048, d->f) != 2048) return -1;
-    } else if (fread(out, 1, DISC_RAW, d->f) != DISC_RAW) {
+        if (fread(out + 16, 1, 2048, f) != 2048) return -1;
+    } else if (fread(out, 1, DISC_RAW, f) != DISC_RAW) {
         header(out, lba, 2);
         return -1;
     }

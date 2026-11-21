@@ -44,7 +44,9 @@
  *   B0 xx yy zz  disc status. cdapdriv sends "FA B0 00 00 00" at init.
  *                zz & $0F = drive state (1 or > 5: disc removed/changed),
  *                yy & 7 = disc type, yy bit 6 = ask for the B1 address.
- *                With a disc: B0 00 02 15 (CD-i disc ready).
+ *                With a disc: B0 00 02 15 (CD-i disc ready), B0 00 01 15
+ *                (audio CD: the shell shows its CD audio player, reads
+ *                the TOC and plays with CDIC command $28).
  *                Empty drive: B0 00 00 00. Tray open: B0 00 00 01 (the
  *                shell then offers CLOSE instead of OPEN).
  * Drive door (channel 2, from the shell's OPEN / CLOSE button):
@@ -86,7 +88,7 @@ typedef struct {
     int     rel_frames;         /* >0: the driver set the position recently */
 
     /* CD drive: multi-byte command on channel 3 */
-    int     disc;               /* 1 = disc in the drive */
+    int     disc;               /* 0 none, 1 CD-i, 2 audio CD */
     uint8_t cd_cmd;
     int     cd_args;            /* argument bytes still expected */
 
@@ -140,9 +142,18 @@ static void reply(hle_ctx_t *c, uint8_t header, int n, uint32_t value)
 
 static void disc_status(hle_ctx_t *c)
 {
-    static const uint8_t present[4] = { 0xB0, 0x00, 0x02, 0x15 };
+    static uint8_t present[4] = { 0xB0, 0x00, 0x02, 0x15 };
     static const uint8_t absent[4]  = { 0xB0, 0x00, 0x00, 0x00 };  /* 01 = tray open ("CLOSE") */
     static const uint8_t open_[4]  = { 0xB0, 0x00, 0x00, 0x01 };
+    {   /* EMU_DISC_STATUS=xxyyzz (hex): test another "disc present" reply */
+        static int done = 0;
+        unsigned v;
+        if (!done && getenv("EMU_DISC_STATUS") && sscanf(getenv("EMU_DISC_STATUS"), "%x", &v) == 1) {
+            present[1] = (uint8_t)(v >> 16); present[2] = (uint8_t)(v >> 8); present[3] = (uint8_t)v;
+        }
+        done = 1;
+    }
+    present[2] = (c->disc == 2) ? 0x01 : 0x02;    /* disc type: audio CD / CD-i */
     const uint8_t *r = c->tray_open ? open_ : c->disc ? present : absent;
     for (int i = 0; i < 4; i++) fifo_push(&c->out[3], r[i]);
     if (c->log) fprintf(stderr, "[SLAVE] disc status %02X %02X %02X %02X\n", r[0], r[1], r[2], r[3]);
@@ -298,7 +309,7 @@ int slave_hle_take_tray_event(slave_backend_t *be)
 void slave_hle_set_tray(slave_backend_t *be, int open, int disc_present)
 {
     hle_ctx_t *c = be->ctx;
-    c->disc = (disc_present != 0);
+    c->disc = disc_present;           /* 0 none, 1 CD-i, 2 audio CD */
     c->tray_open = (open != 0);
     disc_status(c);
 }
@@ -306,8 +317,8 @@ void slave_hle_set_tray(slave_backend_t *be, int open, int disc_present)
 void slave_hle_set_disc(slave_backend_t *be, int present, int notify)
 {
     hle_ctx_t *c = be->ctx;
-    int changed = (c->disc != (present != 0));
-    c->disc = (present != 0);
+    int changed = (c->disc != present);
+    c->disc = present;
     /* unsolicited status, like the 68HC05 (not at power-on: nobody reads
      * channel 3 before cdapdriv is initialized, IN2N would stay asserted) */
     if (changed && notify) disc_status(c);

@@ -73,6 +73,13 @@ Ce qui fonctionne :
   commandes émises par les DCA s'appliquent à partir de leur ligne.
 - **Sons en mémoire** (« ap ») : tampons `$2800`/`$3200` remplis par DMA,
   lecture via AUDCTL/ABUF avec interruption (voix et bruitages des jeux).
+- **CD audio (CD-DA)** : le 68HC05 annonce le type de disque (`B0 00 01 15`
+  pour un CD audio, `02 15` pour un CD-i) ; le shell affiche alors son
+  lecteur de CD audio (pistes, temps, lecture, pause, choix de piste). La
+  commande CDIC `$28` envoie le PCM 44,1 kHz vers la sortie son
+  (rééchantillonné à 37,8 kHz) et ne donne au pilote que le sous-code Q
+  (piste, temps) — tampons vides, sinon le shell y lit des « graphismes »
+  CD+G.
 - **Pointeur relatif** : le 68HC05 applique les repositionnements du pilote
   (`C0..` sur `$200001`) ; tant que le jeu recentre le curseur, la souris
   donne des déplacements, sinon le curseur CD-i suit la souris du PC
@@ -91,7 +98,7 @@ Ce qui fonctionne :
   noires, barre de menus (Windows), souris du PC masquée sur l'image,
   console série masquable, fermeture par la fenêtre vidéo.
 
-Pas encore émulé : audio CD-DA (CD audio), drapeaux de région (matte) et facteurs par région,
+Pas encore émulé : graphismes CD+G, drapeaux de région (matte) et facteurs par région,
 codage RGB555 et son bit de transparence, valeurs de départ DYUV rechargées
 ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
 (MPEG, nécessaire par exemple pour *The 7th Guest*).
@@ -104,10 +111,13 @@ ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
 | *Inca* | 🟡 Lancement OK, pas testé complètement | Image, son et curseur ; demandait l'INTERRUPT des DCA et les facteurs DB/DC changés en cours d'image |
 | *CDI Pinball Volume 1* | 🟡 Lancement OK, pas testé complètement | Les deux flippers répondent (boutons 1 / 2) ; un peu de latence des commandes dans l'émulateur |
 | *The 7th Guest* (disque 1) | ⛔ Non supporté | Nécessite la cartouche FMV (MPEG) |
-| *The 7th Guest* (disque 2, audio) | ⛔ Non supporté | Nécessite la lecture CD-DA |
+| *The 7th Guest* (disque 2, CD audio) | ✅ Fonctionne | Lecteur de CD audio du shell : 7 pistes, lecture, pause, choix de piste, temps écoulé |
 | *CD Shoot* | 🟡 Lancement OK, pas testé complètement | Jouable ; la souris reste capturée dans la fenêtre pendant la visée |
 | *Secret Mission* | 🟡 Lancement OK, pas testé complètement | Jeu et cinématiques avec image et son (le CDIC garde ses filtres pendant une mise à jour `$2E`) |
-| *Harvest of the Sun*, *Journal interactif*, *Kether*, *L'Open de Palm Springs* | ⬜ Pas encore testés | |
+| *Kether* | 🟡 Lancement OK, pas testé complètement | Semble bien fonctionner (image, son, sons en mémoire) |
+| *Harvest of the Sun* (visite interactive sur Van Gogh) | 🟡 Lancement OK, pas testé complètement | Images propres, fondus et son OK |
+| *L'Open de Palm Springs* | 🟡 Lancement OK, pas testé complètement | Fonctionne bien |
+| *Journal interactif 94* (TF1, 2 disques) | ⛔ Non supporté | Disques Digital Video (vidéo et audio MPEG) : affiche correctement « Votre carte numérique n'est pas installée », comme un vrai 205 sans cartouche FMV |
 
 ### Charger un disque
 
@@ -118,9 +128,12 @@ ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
 ou `EMU_DISC=chemin/vers/jeu.cue`, ou en cours de route : bouton **OPEN** du
 menu CD-i (le 68HC05 reçoit `$89` / `$92` pour ouvrir / fermer le tiroir ;
 l'explorateur s'ouvre et le tiroir se referme avec l'image choisie), ou
-menu Fichier > Ouvrir un disque (Ctrl+O) / Éjecter. Formats : `.cue` + `.bin` (un seul fichier BIN, pistes
-MODE1/MODE2/AUDIO en 2352 octets), `.bin`/`.img` brut (une piste CD-i),
-`.iso` (secteurs de 2048 octets).
+menu Fichier > Ouvrir un disque (Ctrl+O) / Éjecter. Formats : `.cue` + `.bin`
+(un fichier BIN pour tout le disque ou un par piste, pistes
+MODE1/MODE2/AUDIO en 2352 octets), `.bin`/`.img` brut (une piste CD-i ou
+un CD audio), `.iso` (secteurs de 2048 octets). Une piste déclarée
+« données » mais sans en-tête de synchronisation CD-ROM est jouée comme
+de l'audio (CD audio mal décrit par son `.cue`).
 
 ### Contrôles
 
@@ -264,7 +277,7 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 | CDIC : commandes, TOC, lecture de secteurs | ✅ Terminé (Astérix jouable) |
 | CDIC : audio ADPCM (lecture disque) | ✅ Terminé |
 | CDIC : sons en mémoire (« ap ») | ✅ Terminé |
-| CDIC : audio CD-DA (CD audio) | 🔲 À démarrer |
+| CDIC : audio CD-DA (CD audio) | ✅ Terminé (lecteur de CD audio du shell) |
 | Bouton OPEN : changer de disque | ✅ Terminé |
 | Émulation NVRAM + horloge (sauvegardes) | ✅ Terminé |
 | Entrées : pointeur via 68HC05 (HLE, absolu + relatif) | ✅ Terminé |

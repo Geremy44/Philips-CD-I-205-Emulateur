@@ -93,7 +93,7 @@ static void insert_disc_dialog(int close_empty)
     }
     if (chosen && cdic_insert(g_cdic, path) == 0) {
         fprintf(stderr, "[DISC] inserted '%s'\n", path);
-        slave_hle_set_tray(g_be, 0, 1);                 /* door closed, disc ready */
+        slave_hle_set_tray(g_be, 0, cdic_disc_kind(g_cdic));  /* door closed, disc ready */
     } else if (close_empty) {
         slave_hle_set_tray(g_be, 0, 0);
     }
@@ -277,7 +277,7 @@ int main(int argc, char* argv[]) {
         } else {
             fprintf(stderr, "[DISC] no disc (give an image as argument or EMU_DISC)\n");
         }
-        slave_hle_set_disc(be, cdic_has_disc(cdic), 0);
+        slave_hle_set_disc(be, cdic_disc_kind(cdic), 0);
     }
     g_cdic = cdic;
     g_be = be;
@@ -559,7 +559,7 @@ int main(int argc, char* argv[]) {
                 insert_disc_dialog(0);                    /* cancel: door stays open; replay: recorded choice */
                 break;
             case 2:                                       /* CLOSE: with the disc, if any */
-                slave_hle_set_tray(be, 0, cdic_has_disc(cdic));
+                slave_hle_set_tray(be, 0, cdic_disc_kind(cdic));
                 break;
             }
             if (pace_log) {

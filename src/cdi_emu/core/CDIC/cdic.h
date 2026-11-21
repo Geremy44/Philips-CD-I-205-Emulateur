@@ -80,6 +80,8 @@ void cdic_init(cdic_t *c);
 int  cdic_insert(cdic_t *c, const char *path);
 void cdic_eject(cdic_t *c);
 int  cdic_has_disc(const cdic_t *c);
+/* 0 = no disc, 1 = CD-i, 2 = audio CD (for the 68HC05 disc status) */
+int  cdic_disc_kind(const cdic_t *c);
 
 /* Where the decoded ADPCM audio goes (NULL = nowhere) */
 void cdic_set_audio(cdic_t *c, cdic_audio_cb cb, void *ctx);
