@@ -45,8 +45,11 @@
  *                zz & $0F = drive state (1 or > 5: disc removed/changed),
  *                yy & 7 = disc type, yy bit 6 = ask for the B1 address.
  *                With a disc: B0 00 02 15 (CD-i disc ready).
- *                Empty drive: B0 00 00 00. zz = 01 shows the tray open
- *                (the shell offers CLOSE instead of OPEN).
+ *                Empty drive: B0 00 00 00. Tray open: B0 00 00 01 (the
+ *                shell then offers CLOSE instead of OPEN).
+ * Drive door (channel 2, from the shell's OPEN / CLOSE button):
+ *   $89 = open the door, $92 = close it. The host opens a file dialog when
+ *   the door opens and closes it again with the chosen disc.
  *   B1 aa aa aa  disc base address (multi-session), 0 here.
  * The 68HC05 sends B0 again by itself when the disc changes.
  *
@@ -88,6 +91,8 @@ typedef struct {
     int     cd_args;            /* argument bytes still expected */
 
     int     reset_req;          /* $8A on channel 2: reset the 68070 */
+    int     tray_open;          /* drive door open ($89 from the shell) */
+    int     tray_event;         /* 1 = just opened, 2 = just closed (host) */
 
     uart_inject_fn inject;
     void          *bus;
@@ -137,7 +142,8 @@ static void disc_status(hle_ctx_t *c)
 {
     static const uint8_t present[4] = { 0xB0, 0x00, 0x02, 0x15 };
     static const uint8_t absent[4]  = { 0xB0, 0x00, 0x00, 0x00 };  /* 01 = tray open ("CLOSE") */
-    const uint8_t *r = c->disc ? present : absent;
+    static const uint8_t open_[4]  = { 0xB0, 0x00, 0x00, 0x01 };
+    const uint8_t *r = c->tray_open ? open_ : c->disc ? present : absent;
     for (int i = 0; i < 4; i++) fifo_push(&c->out[3], r[i]);
     if (c->log) fprintf(stderr, "[SLAVE] disc status %02X %02X %02X %02X\n", r[0], r[1], r[2], r[3]);
 }
@@ -185,6 +191,14 @@ static void hle_write8(void *ctx, uint32_t addr, uint8_t val)
         command(c, val);
     else if (ch == 2 && val == 0x8A)
         c->reset_req = 1;            /* kernel "Fatal System Error; rebooting" */
+    else if (ch == 2 && val == 0x89) {   /* shell OPEN: open the drive door */
+        c->tray_open = 1;
+        c->tray_event = 1;
+        disc_status(c);
+    } else if (ch == 2 && val == 0x92) { /* shell CLOSE: close the door */
+        c->tray_open = 0;
+        c->tray_event = 2;               /* the host reports the new state */
+    }
 }
 
 static uint8_t hle_read8(void *ctx, uint32_t addr)
@@ -271,6 +285,24 @@ slave_backend_t *slave_hle_create(void)
     return be;
 }
 
+int slave_hle_take_tray_event(slave_backend_t *be)
+{
+    hle_ctx_t *c = be->ctx;
+    int e = c->tray_event;
+    c->tray_event = 0;
+    return e;
+}
+
+/* Host side door: open (eject) or close with / without a disc, reporting
+ * the new state to CD-RTOS like the 68HC05 does */
+void slave_hle_set_tray(slave_backend_t *be, int open, int disc_present)
+{
+    hle_ctx_t *c = be->ctx;
+    c->disc = (disc_present != 0);
+    c->tray_open = (open != 0);
+    disc_status(c);
+}
+
 void slave_hle_set_disc(slave_backend_t *be, int present, int notify)
 {
     hle_ctx_t *c = be->ctx;
@@ -287,6 +319,16 @@ int slave_hle_take_reset(slave_backend_t *be)
     int r = c->reset_req;
     c->reset_req = 0;
     return r;
+}
+
+/* 1 while the pointer driver recentres the cursor (relative mode), and
+ * the current CD-i pointer position */
+int slave_hle_pointer_relative(slave_backend_t *be, int *x, int *y)
+{
+    hle_ctx_t *c = be->ctx;
+    if (x) *x = c->px;
+    if (y) *y = c->py;
+    return c->rel_frames > 0;
 }
 
 void slave_hle_frame(slave_backend_t *be)

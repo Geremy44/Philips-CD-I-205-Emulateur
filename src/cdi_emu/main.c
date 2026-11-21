@@ -63,10 +63,60 @@ static int hotkey(int fkey)
     return 0;
 }
 
+/* Recording / replay state (see "Input recording / replay" below) */
+static long long g_step;
+static FILE *g_rec, *g_play;
+static char  g_play_disc[1100];          /* replay: disc chosen in the dialog */
+static int   g_play_disc_ok = -1;        /* -1 none pending, 0 cancelled, 1 path */
+
+/* Disc changes: the shell's OPEN button, the File menu */
+static cdic_t          *g_cdic = NULL;
+static slave_backend_t *g_be   = NULL;
+
+/* Ask for an image and insert it; the door ends closed (with the disc if
+ * one was chosen and loads, empty otherwise when close_empty is set). */
+static void insert_disc_dialog(int close_empty)
+{
+    char path[1100];
+    int chosen;
+    if (g_play) {                        /* replay: the recorded choice */
+        chosen = (g_play_disc_ok == 1);
+        if (chosen) snprintf(path, sizeof(path), "%s", g_play_disc);
+        if (g_play_disc_ok < 0) fprintf(stderr, "[INPUT] replay: no disc recorded for this dialog\n");
+        g_play_disc_ok = -1;
+    } else {
+        chosen = video_display_choose_disc(path, sizeof(path));
+        if (g_rec) {                     /* "# disc step path" ("-" = cancelled) */
+            fprintf(g_rec, "# disc %lld %s\n", g_step, chosen ? path : "-");
+            fflush(g_rec);
+        }
+    }
+    if (chosen && cdic_insert(g_cdic, path) == 0) {
+        fprintf(stderr, "[DISC] inserted '%s'\n", path);
+        slave_hle_set_tray(g_be, 0, 1);                 /* door closed, disc ready */
+    } else if (close_empty) {
+        slave_hle_set_tray(g_be, 0, 0);
+    }
+}
+
 /* Menu bar of the video window */
 static void menu_action(int id)
 {
+    if (g_rec && (id == VM_OPEN_DISC || id == VM_EJECT)) {   /* replayed at this step */
+        fprintf(g_rec, "# menu %lld %d\n", g_step, id);
+        fflush(g_rec);
+    }
     switch (id) {
+    case VM_OPEN_DISC:                                  /* change disc at any time */
+        cdic_eject(g_cdic);
+        slave_hle_set_tray(g_be, 1, 0);                 /* door open: CD-RTOS forgets the disc */
+        insert_disc_dialog(1);
+        break;
+    case VM_EJECT:
+        cdic_eject(g_cdic);
+        slave_hle_set_tray(g_be, 1, 0);                 /* stays open: the shell shows CLOSE */
+        fprintf(stderr, "[DISC] ejected\n");
+        break;
     case VM_QUIT: { SDL_Event q; SDL_zero(q); q.type = SDL_QUIT; SDL_PushEvent(&q); break; }
     case VM_SAVE:        hotkey(5); break;
     case VM_LOAD:        hotkey(9); break;
@@ -82,10 +132,9 @@ static void menu_action(int id)
  *   EMU_INPUT_REC=file   writes "step x y buttons" for every pointer event
  *   EMU_INPUT_PLAY=file  replays them at the same instruction counts, and
  *                        ignores the real mouse meanwhile */
-static long  g_step = 0;
-static FILE *g_rec = NULL, *g_play = NULL;
-static long  g_play_step = -1;
+static long long g_play_step = -1;
 static int   g_play_x, g_play_y, g_play_b;
+static int   g_play_menu = 0;            /* next event is a menu command */
 
 static void push_pointer(void *ctx, int x, int y, int buttons)
 {
@@ -102,14 +151,33 @@ static void pointer_event(void *ctx, int x, int y, int buttons)
     if (g_play) return;                          /* replay in progress */
     if (g_swap_buttons)                          /* left <-> right */
         buttons = (buttons & ~3) | ((buttons & 1) << 1) | ((buttons >> 1) & 1);
-    if (g_rec) { fprintf(g_rec, "%ld %d %d %d\n", g_step, x, y, buttons); fflush(g_rec); }
+    if (g_rec) { fprintf(g_rec, "%lld %d %d %d\n", g_step, x, y, buttons); fflush(g_rec); }
     push_pointer(ctx, x, y, buttons);
 }
 
+/* Next replay event. "# disc" lines only store the choice for the next
+ * file dialog; "# menu" lines are events like the pointer ones. */
 static void play_next(void)
 {
-    if (fscanf(g_play, "%ld %d %d %d", &g_play_step, &g_play_x, &g_play_y, &g_play_b) != 4) {
-        fprintf(stderr, "[INPUT] replay finished at step %ld\n", g_step);
+    char line[1200];
+    g_play_menu = 0;
+    while (fgets(line, sizeof(line), g_play)) {
+        long long st; int id; char *p;
+        if (sscanf(line, "%lld %d %d %d", &g_play_step, &g_play_x, &g_play_y, &g_play_b) == 4)
+            return;
+        if (sscanf(line, "# menu %lld %d", &st, &id) == 2) {
+            g_play_step = st; g_play_x = id; g_play_menu = 1;
+            return;
+        }
+        if (!strncmp(line, "# disc ", 7) && (p = strchr(line + 7, ' ')) != NULL) {
+            p++;
+            p[strcspn(p, "\r\n")] = 0;
+            g_play_disc_ok = strcmp(p, "-") ? 1 : 0;
+            snprintf(g_play_disc, sizeof(g_play_disc), "%s", p);
+        }
+    }
+    {
+        fprintf(stderr, "[INPUT] replay finished at step %lld\n", g_step);
         fclose(g_play);
         g_play = NULL;
         g_play_step = -1;
@@ -211,6 +279,8 @@ int main(int argc, char* argv[]) {
         }
         slave_hle_set_disc(be, cdic_has_disc(cdic), 0);
     }
+    g_cdic = cdic;
+    g_be = be;
     uart_console_set_hotkey_cb(hotkey);
 
     /* Reset the CPU (loads PC and SP from the ROM reset vector) */
@@ -239,17 +309,17 @@ int main(int argc, char* argv[]) {
      * trace_enable: 1 = print each instruction's state (EMU_TRACE=1)
      * trace_max:    max number of instructions to trace (0 = unlimited) */
     int  trace_enable = (getenv("EMU_TRACE") != NULL) ? 1 : 0;
-    long trace_max = 1410065408;
+    long long trace_max = 0;                 /* 0 = no limit */
     {
         const char *envm = getenv("EMU_TRACE_MAX");
-        if (envm) trace_max = atol(envm);
+        if (envm) trace_max = atoll(envm);
     }
 
     printf("\nStarting emulation loop...\n");
 
-    long traced = 0;
+    long long traced = 0;
     int running = 1;
-    long i = 0;
+    long long i = 0;
     /* Recording / replay also freeze the clock source: the RTC starts at the
      * time written in the file header and follows the emulated cycles, so
      * a replay sees exactly the same dates as the recorded session. */
@@ -274,7 +344,7 @@ int main(int argc, char* argv[]) {
             play_next();
         }
     }
-    long pc_poll = getenv("EMU_PC_POLL") ? atol(getenv("EMU_PC_POLL")) : 0;
+    long long pc_poll = getenv("EMU_PC_POLL") ? atoll(getenv("EMU_PC_POLL")) : 0;
     /* EMU_BREAK=hex: print the last 64 PCs (and registers) when PC reaches it */
     /* several addresses: EMU_BREAK=1A96D0,1A9706 (each prints up to 4 hits) */
     uint32_t brks[8] = {0};
@@ -294,10 +364,10 @@ int main(int argc, char* argv[]) {
     int user_pos = 0;
     /* EMU_AUTOCLICK=x,y,step: press button 1 at (x,y) at that instruction count
      * (pointer units: x = frame pixel 0..767, y = half line 0..479) */
-    long ac_x = -1, ac_y = 0, ac_step = 0;
-    long watch_after = getenv("EMU_WATCH_AFTER") ? atol(getenv("EMU_WATCH_AFTER")) : 0;
+    long long ac_x = -1, ac_y = 0, ac_step = 0;
+    long long watch_after = getenv("EMU_WATCH_AFTER") ? atoll(getenv("EMU_WATCH_AFTER")) : 0;
     if (getenv("EMU_AUTOCLICK"))
-        sscanf(getenv("EMU_AUTOCLICK"), "%ld,%ld,%ld", &ac_x, &ac_y, &ac_step);
+        sscanf(getenv("EMU_AUTOCLICK"), "%lld,%lld,%lld", &ac_x, &ac_y, &ac_step);
     /* Real-time pacing: emulated time (CPU cycles / 15 MHz) follows the host
      * clock. EMU_SPEED = percent of real speed (default 100, 0 = unlimited). */
     int speed = getenv("EMU_SPEED") ? atoi(getenv("EMU_SPEED")) : 100;
@@ -310,10 +380,10 @@ int main(int argc, char* argv[]) {
     int ring_pos = 0;
 
     /* --- Main emulation loop --- */
-    while (running && i < trace_max) {
+    while (running && (trace_max <= 0 || i < trace_max)) {
 
         /* Print instruction trace (skipping known noise loops) */
-        if (trace_enable && traced < trace_max) {
+        if (trace_enable && (trace_max <= 0 || traced < trace_max)) {
             if (traced &&
                  !(cpu.pc >= 0x181cd4 && cpu.pc <= 0x181ce0) &&
                  !(cpu.pc >= 0x181CE2 && cpu.pc <= 0x181CEE) &&
@@ -322,7 +392,7 @@ int main(int argc, char* argv[]) {
                 ) {
                 uint32_t pc_before = cpu.pc;
 
-                printf("[%6ld] PC=%08X op=%04X \nD0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\nA0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
+                printf("[%6lld] PC=%08X op=%04X \nD0=%08X D1=%08X D2=%08X D3=%08X D4=%08X D5=%08X D6=%08X D7=%08X\nA0=%08X A1=%08X A2=%08X A3=%08X A4=%08X A5=%08X A6=%08X A7=%08X\n",
                 traced, pc_before, bus_read16(bus, pc_before),
                 cpu.d[0], cpu.d[1], cpu.d[2], cpu.d[3], cpu.d[4], cpu.d[5], cpu.d[6], cpu.d[7],
                 cpu.a[0], cpu.a[1], cpu.a[2], cpu.a[3], cpu.a[4], cpu.a[5], cpu.a[6], cpu.a[7]);
@@ -335,7 +405,7 @@ int main(int argc, char* argv[]) {
             for (int k = 0; k < nbrk; k++)
                 if (cpu.pc == brks[k] && brk_hits[k] < 16) { hit = k; brk_hits[k]++; }
             if (hit >= 0) {
-                fprintf(stderr, "[BREAK] PC=%06X reached at step %ld, last PCs:\n", brks[hit], i);
+                fprintf(stderr, "[BREAK] PC=%06X reached at step %lld, last PCs:\n", brks[hit], i);
                 for (int k = 0; k < 64; k++)
                     fprintf(stderr, "  %06X\n", pc_ring[(ring_pos + k) & 63]);
                 fprintf(stderr, "  D0-D7 %08X %08X %08X %08X %08X %08X %08X %08X\n",
@@ -352,6 +422,16 @@ int main(int argc, char* argv[]) {
                 for (int k = 0; k < 40; k++)
                     fprintf(stderr, " %04X", bus_read16(bus, ((cpu.pc - 32) & ~1u) + 2 * k));
                 fprintf(stderr, "\n");
+                /* EMU_DUMP=addr,len (hex): also dump that memory */
+                if (getenv("EMU_DUMP")) {
+                    unsigned da = 0, dl = 0;
+                    sscanf(getenv("EMU_DUMP"), "%x,%x", &da, &dl);
+                    for (unsigned k = 0; k < dl; k += 2) {
+                        if (!(k & 31)) fprintf(stderr, "\n  MEM %06X:", da + k);
+                        fprintf(stderr, " %04X", bus_read16(bus, (da + k) & ~1u));
+                    }
+                    fprintf(stderr, "\n");
+                }
                 fflush(stderr);
             }
             pc_ring[ring_pos] = cpu.pc;
@@ -366,16 +446,23 @@ int main(int argc, char* argv[]) {
         bus_watch_pc = cpu.pc;
         bus_watch_on = (i >= watch_after);
         while (g_play && i == g_play_step) {
-            push_pointer(be, g_play_x, g_play_y, g_play_b);
-            play_next();
+            if (g_play_menu) { int id = g_play_x; play_next(); menu_action(id); }
+            else {
+                static int last_b = 0;
+                if (g_play_b != last_b && getenv("EMU_INPUT_LOG"))
+                    fprintf(stderr, "[INPUT] step %lld buttons %d at %d,%d\n", i, g_play_b, g_play_x, g_play_y);
+                last_b = g_play_b;
+                push_pointer(be, g_play_x, g_play_y, g_play_b);
+                play_next();
+            }
         }
         if (ac_x >= 0) {
             /* glide towards the target (16 moves), like a real mouse, then press */
             if (i >= ac_step - 4000000 && i < ac_step && (ac_step - i) % 250000 == 0) {
-                long k = 16 - (ac_step - i) / 250000;          /* 0..15 */
+                long long k = 16 - (ac_step - i) / 250000;          /* 0..15 */
                 push_pointer(be, (int)(200 + (ac_x - 200) * k / 15), (int)(300 + (ac_y - 300) * k / 15), 0);
             }
-            if (i == ac_step) { push_pointer(be, (int)ac_x, (int)ac_y, 1); fprintf(stderr, "[CLICK] %ld,%ld\n", ac_x, ac_y); }
+            if (i == ac_step) { push_pointer(be, (int)ac_x, (int)ac_y, 1); fprintf(stderr, "[CLICK] %lld,%lld\n", ac_x, ac_y); }
             if (i == ac_step + 3000000) {      /* release, and click again later (8 times) */
                 push_pointer(be, (int)ac_x, (int)ac_y, 0);
                 static int ac_n = 0;
@@ -387,9 +474,24 @@ int main(int argc, char* argv[]) {
 
         /* Execute one CPU instruction */
         int cycles = m68k_step(&cpu);
+        /* EMU_CPU_STATS=1: average clock periods per instruction, every
+         * 50 million instructions (instructions run, not STOP waits) */
+        {
+            static int stats = -1;
+            static long long st_cyc = 0, st_n = 0;
+            if (stats < 0) stats = getenv("EMU_CPU_STATS") != NULL;
+            if (stats && !cpu.stopped) {
+                st_cyc += cycles; st_n++;
+                if (st_n == 50000000) {
+                    fprintf(stderr, "[CPU] %.2f cycles per instruction (%.2f MIPS at 15 MHz)\n",
+                            (double)st_cyc / st_n, 15.0 * st_n / st_cyc);
+                    st_cyc = st_n = 0;
+                }
+            }
+        }
 
         if (pc_poll && (i % pc_poll) == 0)
-            fprintf(stderr, "[PCPOLL] i=%ld PC=%08X A7=%08X\n", i, cpu.pc, cpu.a[7]);
+            fprintf(stderr, "[PCPOLL] i=%lld PC=%08X A7=%08X\n", i, cpu.pc, cpu.a[7]);
 
         /* Advance video timing by the consumed cycles */
         int new_frame = scc66470_tick(video, cycles);
@@ -418,7 +520,7 @@ int main(int argc, char* argv[]) {
 
         /* 68HC05 reset request ($8A): warm reboot, the DRAM and the disc stay */
         if (slave_hle_take_reset(be)) {
-            fprintf(stderr, "[RESET] 68HC05 resets the 68070 (warm reboot) at step %ld\n", i);
+            fprintf(stderr, "[RESET] 68HC05 resets the 68070 (warm reboot) at step %lld\n", i);
             onchip68070_reset(onchip);
             scc66470_init(video);
             scc66470_init(video_b);
@@ -431,7 +533,7 @@ int main(int argc, char* argv[]) {
 
         /* Check for CPU halt (unimplemented opcode, etc.) */
         if (cpu.halted) {
-            fprintf(stderr, "[HALT] CPU stopped/halted at step %ld\n", traced);
+            fprintf(stderr, "[HALT] CPU stopped/halted at step %lld\n", traced);
             break;
         }
 
@@ -443,6 +545,23 @@ int main(int argc, char* argv[]) {
             running = uart_console_update();
             bus_nvram_poll(bus);              /* autosave game saves / clock */
             slave_hle_frame(be);
+            fflush(stderr);                   /* logs survive a killed process */
+            {   /* PC mouse captured while the game recentres the cursor */
+                int cx, cy;
+                int rel = slave_hle_pointer_relative(be, &cx, &cy);
+                video_display_pointer_mode(rel && !g_play, cx, cy);
+            }
+            /* Drive door moved by the shell (OPEN / CLOSE buttons) */
+            switch (slave_hle_take_tray_event(be)) {
+            case 1:                                       /* OPEN: eject, choose a disc */
+                cdic_eject(cdic);
+                slave_hle_set_disc(be, 0, 0);
+                insert_disc_dialog(0);                    /* cancel: door stays open; replay: recorded choice */
+                break;
+            case 2:                                       /* CLOSE: with the disc, if any */
+                slave_hle_set_tray(be, 0, cdic_has_disc(cdic));
+                break;
+            }
             if (pace_log) {
                 uint64_t now = SDL_GetPerformanceCounter();
                 if (pace_last) {
@@ -484,7 +603,7 @@ int main(int argc, char* argv[]) {
      * the console, until the user closes them. */
     int win_alive = (running && !getenv("EMU_TRACE_MAX")) ? 1 : 0;
     if (win_alive) {
-        fprintf(stderr, "[MAIN] CPU loop finished (traced=%ld), keeping window open.\n", traced);
+        fprintf(stderr, "[MAIN] CPU loop finished (traced=%lld), keeping window open.\n", traced);
         uart_console_set_visible(1);
     }
     while (win_alive) {

@@ -94,9 +94,12 @@ typedef struct scc_frame {
     int      enabled;           /* DCR.DE */
     uint8_t  pix[SCC_OUT_MAX_W * SCC_OUT_MAX_H];
     uint32_t bep[SCC_BEP_MAX];  /* BEP CONTROL words seen during this frame */
+    int16_t  bep_line[SCC_BEP_MAX]; /* output row from which each one applies
+                                       (-1 = ICA, before the first line) */
     int      bep_count;
     uint32_t vsr_start;         /* display start address after the ICA */
     int      ica_count;         /* ICA instructions executed */
+    int      interrupt;         /* an INTERRUPT ran (ICA or any DCA) */
 } scc_frame_t;
 
 /* Render one frame from video DRAM (the first 1 MB of system DRAM). */

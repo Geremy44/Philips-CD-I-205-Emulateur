@@ -180,6 +180,7 @@ typedef struct {
     int ss, cm, om1, om2, mf1, mf2, ft1, ft2;
     int dcp_reloaded;  /* a RELOAD DCP happened during this DCA */
     int interrupt;     /* an INTERRUPT instruction was executed */
+    int line;          /* output row the BEP words apply from (-1 = ICA) */
     scc_frame_t *out;
 } disp_state_t;
 
@@ -211,8 +212,10 @@ static int run_control(disp_state_t *s, const vram_t *m, uint32_t ptr,
         ptr = (ptr + 4) & VA_MASK;
 
         if (w & 0x80000000u) {                     /* BEP CONTROL */
-            if (s->out->bep_count < SCC_BEP_MAX)
+            if (s->out->bep_count < SCC_BEP_MAX) {
+                s->out->bep_line[s->out->bep_count] = (int16_t)s->line;
                 s->out->bep[s->out->bep_count++] = w;
+            }
             continue;
         }
         switch (w >> 28) {
@@ -357,6 +360,7 @@ void scc66470_render(const scc66470_t *v, const uint8_t *dram, uint32_t dram_siz
     int slow = (dm == 0 || dm == 3);               /* NORMAL / DUAL PORT */
 
     /* ICA: vertical retrace control program */
+    s.line = -1;
     if (ic || dc)
         out->ica_count = run_control(&s, &m, v->ica_pointer ? v->ica_pointer : ICA_POINTER,
                                      ICA_MAX_INSNS, CTX_ICA);
@@ -388,6 +392,7 @@ void scc66470_render(const scc66470_t *v, const uint8_t *dram, uint32_t dram_siz
         uint8_t *row = &out->pix[(top + y) * SCC_OUT_MAX_W];
 
         /* Independent DCA: executed before the line, at DCP */
+        s.line = top + y;
         if (dca_insns && id) {
             uint32_t this_dcp = s.dcp;
             uint32_t before   = s.vac;
@@ -412,16 +417,21 @@ void scc66470_render(const scc66470_t *v, const uint8_t *dram, uint32_t dram_siz
             uint32_t dca_addr = ls ? ((line_start & ~0x1FFu) | (dca_insns == 16 ? 0x1C0u : 0x1F0u))
                                    : s.vac;
             uint32_t before = s.vac;
+            s.line = top + y + 1;                  /* after the pixels: next line */
             run_control(&s, &m, dca_addr, dca_insns, CTX_DCA_INTERLEAVED);
             if (s.vac != before) next = s.vac;    /* RELOAD VSR in the DCA */
             else if (!ls) next = (dca_addr + (uint32_t)dca_insns * 4u) & VA_MASK;
         }
         line_start = next;
     }
+    out->interrupt = s.interrupt;
 }
 
-/* Vertical retrace: the ICA program runs; an INTERRUPT instruction in it
- * sets IT1 (unless DI1 = CSR bit 15). The DCA programs are not scanned. */
+/* Vertical retrace: the frame's control programs run; an INTERRUPT
+ * instruction sets IT1 (unless DI1 = CSR bit 15). Besides the ICA, the
+ * line DCAs count: CD-RTOS puts an INTERRUPT in the DCA of a given line
+ * for a "signal at line N" request (Inca waits for it after its intro).
+ * The interrupt is raised once per frame, at the retrace. */
 void scc66470_vretrace(scc66470_t *v, const uint8_t *dram, uint32_t dram_size)
 {
     uint16_t dcr = v->dcr;
@@ -435,6 +445,11 @@ void scc66470_vretrace(scc66470_t *v, const uint8_t *dram, uint32_t dram_size)
     st.vac = (((uint32_t)dcr & 0xFu) << 16) | v->vsr;
     st.dcp = ((((uint32_t)v->dcr2 & 0xFu) << 16) | v->dcp) & 0xFFFFCu;
     run_control(&st, &m, v->ica_pointer ? v->ica_pointer : ICA_POINTER, ICA_MAX_INSNS, CTX_ICA);
+    if (!st.interrupt && ((dcr >> 4) & 1)) {                   /* DCAs on */
+        static scc_frame_t frame;                              /* large: not on the stack */
+        scc66470_render(v, dram, dram_size, &frame);
+        st.interrupt = frame.interrupt;
+    }
     if (st.interrupt && !(v->csr_control & 0x8000u)) {
         v->it1 = 1;
         if (!v->it_logged && video_log_enabled()) {

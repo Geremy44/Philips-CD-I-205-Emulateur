@@ -173,7 +173,7 @@ static void deliver_sector(cdic_t *c)
     int t = disc_read(&c->disc, lba, raw);
     int mode = raw[15];
 
-    if (c->command == 0x2A && mode == 2) {
+    if (c->run_cmd == 0x2A && mode == 2) {
         uint8_t file = raw[16], chan = raw[17] & 0x1F, sm = raw[18];
         /* Empty sectors (no data/audio/video bit) are padding, except the
          * ones that close a record or a file (EOR $01, trigger $10, EOF $80):
@@ -219,7 +219,7 @@ static void deliver_sector(cdic_t *c)
     c->buffer ^= 1;
     if (c->log && (c->delivered < 8 || (c->delivered % 500) == 0 || c->log >= 3))
         cdic_logf(c, "cmd %02X LBA %d -> buffer %d (mode %d, sub %02X %02X %02X %02X) #%ld\n",
-                  c->command, lba, buf, mode, raw[16], raw[17], raw[18], raw[19], c->delivered);
+                  c->run_cmd, lba, buf, mode, raw[16], raw[17], raw[18], raw[19], c->delivered);
 }
 
 static void start_command(cdic_t *c)
@@ -230,12 +230,14 @@ static void start_command(cdic_t *c)
               (unsigned)c->channel, c->audio_channel, cdic_has_disc(c) ? "" : " [no disc]");
     switch (c->command) {
     case 0x27:                                  /* read TOC */
+        c->run_cmd = c->command;
         c->busy = cdic_has_disc(c);
         c->toc_pos = 0;
         c->countdown = SEEK_CYCLES;
         break;
     case 0x28: case 0x29: case 0x2A: case 0x2C:  /* play / read / seek */
         adpcm_reset(&c->adpcm);
+        c->run_cmd = c->command;
         c->busy = cdic_has_disc(c);
         c->lba = disc_msf_to_lba(m, s, f);
         c->countdown = SEEK_CYCLES;
@@ -309,7 +311,7 @@ void cdic_tick(cdic_t *c, int cycles)
         if (!c->busy) return;
     }
     c->countdown += SECTOR_CYCLES;
-    if (c->command == 0x27) deliver_toc(c);
+    if (c->run_cmd == 0x27) deliver_toc(c);
     else                    deliver_sector(c);
 }
 

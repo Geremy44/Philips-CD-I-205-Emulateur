@@ -38,9 +38,15 @@ void    slave_push_input(slave_t *s, const uint8_t *report, int len);
 void slave_hle_set_uart(slave_backend_t *be, uart_inject_fn fn, void *bus);
 /* Disc in the drive (1) or not (0): the HLE reports it with B0 messages */
 void slave_hle_set_disc(slave_backend_t *be, int present, int notify);
+/* Drive door: 1 = the shell opened it ($89), 2 = closed it ($92), 0 = none */
+int  slave_hle_take_tray_event(slave_backend_t *be);
+/* Host opens / closes the door (with or without a disc) and reports it */
+void slave_hle_set_tray(slave_backend_t *be, int open, int disc_present);
 /* 1 once if the CPU asked the 68HC05 for a reset ($8A on $200005) */
 int  slave_hle_take_reset(slave_backend_t *be);
 /* Call once per video frame (pointer: relative mode time-out) */
 void slave_hle_frame(slave_backend_t *be);
+/* 1 while the pointer driver recentres the cursor; *x, *y = CD-i pointer */
+int  slave_hle_pointer_relative(slave_backend_t *be, int *x, int *y);
 
 #endif /* SLAVE_H */

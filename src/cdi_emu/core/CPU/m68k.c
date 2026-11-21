@@ -9,9 +9,11 @@
 
 #include "m68k.h"
 #include "m68k_ops.h"
+#include "scc68070_timing.h"
 #include "../bus.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* Initialize the CPU structure to a clean zeroed state */
 void m68k_init(m68k_t *cpu) {
@@ -76,15 +78,24 @@ int m68k_step(m68k_t *cpu) {
             int level = cpu->irq_level;
             m68k_exception(cpu, cpu->irq_vector);
             cpu->sr = (uint16_t)((cpu->sr & ~0x0700) | (level << 8));
-            return 44;                      /* approx. interrupt latency */
+            return scc68070_interrupt_cycles();   /* table 19: 65 */
         }
     }
 
     /* STOP: time passes (peripherals keep running) until an interrupt */
     if (cpu->stopped) return 8;
 
+    /* Duration from the SCC68070 timing tables (scc68070_timing.c), taken
+     * before the instruction changes the registers. EMU_CPI=n forces a
+     * flat n cycles per instruction instead (old behaviour: 8). */
+    static int cpi = -1;
+    if (cpi < 0) {
+        const char *e = getenv("EMU_CPI");
+        cpi = (e && atoi(e) > 0) ? atoi(e) : 0;
+    }
+    int cycles = cpi ? cpi : scc68070_cycles(cpu);
     m68k_step_ops(cpu);
-    return 8;
+    return cycles;
 }
 
 void m68k_set_irq(m68k_t *cpu, int level, int vector) {

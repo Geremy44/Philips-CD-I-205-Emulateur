@@ -17,9 +17,9 @@
 Avec la ROM `CDI205-00_PS-7211_REL.2.1`, l'émulateur démarre CD-RTOS jusqu'au
 **menu principal du CD-i, en couleurs** (fond, logo PHILIPS, boutons INFO /
 SETTINGS / DIM / MEMORY / OPEN, curseur matériel), lance les disques CD-i,
-et **fait tourner un jeu complet** : *Astérix : Le Défi de César* est
-jouable de bout en bout (intro, dessins animés, menus, plateaux, voix,
-musique et bruitages) :
+et **fait tourner des jeux** : *Astérix : Le Défi de César* est jouable
+(intro, dessins animés, menus, plateaux, voix, musique et bruitages ; une
+partie complète reste à tester), voir [Jeux testés](#jeux-testés) :
 
 ![Menu du CD-i 205 rendu par l'émulateur](src/cdi_emu/menu_cdi_boot.png)
 
@@ -28,14 +28,18 @@ Ce qui fonctionne :
 - **CPU 68070** : interpréteur 68000 + trame d'exception courte du 68070
   (SR, PC, format/vecteur), USP/SSP, `TRAP`, `RTE`, `STOP`, interruptions
   par niveau, ADDX/SUBX, DIVU/DIVS, CHK, TRAPV, EXT, MOVE SR/CCR, accès
-  lecture-modification-écriture corrects.
+  lecture-modification-écriture corrects. **Durée de chaque instruction**
+  d'après les tables de la fiche technique SCC68070 (tables 7 à 19 :
+  modes d'adressage, MOVE, MOVEM, décalages, branchements, exceptions),
+  soit 16 à 21 cycles par instruction en moyenne (~0,8 MIPS à 15 MHz).
 - **Périphériques internes du 68070** : timer T0/T1/T2 (tick OS-9 à 100 Hz),
   registres de priorité PICR1/PICR2, UART (console SDL).
 - **68HC05 (HLE)** : réponses aux requêtes de CD-RTOS, IRQ niveau 2,
   pointeur absolu (souris / clavier).
 - **NVRAM + horloge M48T08** : sauvegarde automatique, slots F5/F9.
 - **CDIC (lecteur CD)** : commandes du pilote `cdapdriv` (reset, TOC,
-  lecture mode 1 / mode 2 avec filtres fichier / canal, seek, update),
+  lecture mode 1 / mode 2 avec filtres fichier / canal, seek, update —
+  qui ne change que les filtres, la lecture en cours continue),
   secteurs livrés à 75 par seconde dans les tampons de la RAM du CDIC
   avec leur sous-code Q, interruption niveau 4. Images `.cue`/`.bin`
   (2352 octets) et `.iso` (2048 octets). Le 68HC05 signale le disque à
@@ -52,9 +56,10 @@ Ce qui fonctionne :
   tampons audio du CDIC (`$2800`/`$3200`), sont décodés (niveaux A/B/C,
   mono/stéréo, 37,8/18,9 kHz) et joués par SDL. La musique de l'intro
   d'Astérix sort correctement.
-- **Interruption vidéo** : l'instruction INTERRUPT des programmes ICA lève
-  IT1 (niveau 5, autovecteur 61) à chaque trame — c'est le « top » dont
-  les jeux se servent pour se synchroniser.
+- **Interruption vidéo** : l'instruction INTERRUPT des programmes ICA, ou
+  des DCA d'une ligne (signal « à la ligne N » de CD-RTOS), lève IT1
+  (niveau 5, autovecteur 61) — c'est le « top » dont les jeux se servent
+  pour se synchroniser.
 - **Reset par le 68HC05** (`$8A` sur `$200005`) : redémarrage à chaud après
   un `F$Panic` / « Fatal System Error », comme le vrai lecteur.
 - **Vidéo** : les deux SCC66470 d'après leur datasheet (maître = plan A en
@@ -64,14 +69,19 @@ Ce qui fonctionne :
   codage CLUT7/CLUT8, clé de transparence par plan, ordre des plans,
   superposition, curseur) et décodage **DYUV** des images naturelles
   (deltas quantifiés du Green Book, valeur de départ CA/CB, YUV → RGB),
-  facteurs de contribution DB/DC et mixage des plans (fondus).
+  facteurs de contribution DB/DC et mixage des plans (fondus). Les
+  commandes émises par les DCA s'appliquent à partir de leur ligne.
 - **Sons en mémoire** (« ap ») : tampons `$2800`/`$3200` remplis par DMA,
   lecture via AUDCTL/ABUF avec interruption (voix et bruitages des jeux).
 - **Pointeur relatif** : le 68HC05 applique les repositionnements du pilote
   (`C0..` sur `$200001`) ; tant que le jeu recentre le curseur, la souris
   donne des déplacements, sinon le curseur CD-i suit la souris du PC
-  (recalage mesuré sur le curseur du shell : Y × 240/560). Les flèches
-  envoient des impulsions (jeux qui lisent le pointeur comme une manette).
+  (recalage mesuré sur le curseur du shell : Y × 240/560). Pendant que le
+  jeu recentre le curseur, la souris du PC est capturée dans la fenêtre
+  (elle n'en sort plus) et ses déplacements partent en impulsions ; elle
+  est relâchée 2 s après, sous le curseur CD-i (F8 ou Alt+Tab la libèrent
+  aussi). Les flèches envoient des impulsions (jeux qui lisent le pointeur
+  comme une manette).
 - **Bus 24 bits** : comme le 68070, l'octet de poids fort des adresses est
   ignoré (hors périphériques internes `$80000000+`) ; certains jeux rangent
   des drapeaux dans les pointeurs.
@@ -81,11 +91,23 @@ Ce qui fonctionne :
   noires, barre de menus (Windows), souris du PC masquée sur l'image,
   console série masquable, fermeture par la fenêtre vidéo.
 
-Pas encore émulé : audio CD-DA (CD audio), éjection / changement de disque
-depuis le bouton OPEN, drapeaux de région (matte) et facteurs par région,
+Pas encore émulé : audio CD-DA (CD audio), drapeaux de région (matte) et facteurs par région,
 codage RGB555 et son bit de transparence, valeurs de départ DYUV rechargées
 ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
 (MPEG, nécessaire par exemple pour *The 7th Guest*).
+
+### Jeux testés
+
+| Jeu | État | Remarques |
+|-----|------|-----------|
+| *Astérix : Le Défi de César* | 🟡 Lancement OK, pas testé complètement | Intro, dessins animés, menus, plateaux, voix, musique, bruitages ; partie complète et durée de jeu pas encore vérifiées |
+| *Inca* | 🟡 Lancement OK, pas testé complètement | Image, son et curseur ; demandait l'INTERRUPT des DCA et les facteurs DB/DC changés en cours d'image |
+| *CDI Pinball Volume 1* | 🟡 Lancement OK, pas testé complètement | Les deux flippers répondent (boutons 1 / 2) ; un peu de latence des commandes dans l'émulateur |
+| *The 7th Guest* (disque 1) | ⛔ Non supporté | Nécessite la cartouche FMV (MPEG) |
+| *The 7th Guest* (disque 2, audio) | ⛔ Non supporté | Nécessite la lecture CD-DA |
+| *CD Shoot* | 🟡 Lancement OK, pas testé complètement | Jouable ; la souris reste capturée dans la fenêtre pendant la visée |
+| *Secret Mission* | 🟡 Lancement OK, pas testé complètement | Jeu et cinématiques avec image et son (le CDIC garde ses filtres pendant une mise à jour `$2E`) |
+| *Harvest of the Sun*, *Journal interactif*, *Kether*, *L'Open de Palm Springs* | ⬜ Pas encore testés | |
 
 ### Charger un disque
 
@@ -93,8 +115,10 @@ ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
 ./cdi205 "chemin/vers/jeu.cue"
 ```
 
-ou `EMU_DISC=chemin/vers/jeu.cue`. Sans image, le lecteur est vide et le
-menu propose OPEN. Formats : `.cue` + `.bin` (un seul fichier BIN, pistes
+ou `EMU_DISC=chemin/vers/jeu.cue`, ou en cours de route : bouton **OPEN** du
+menu CD-i (le 68HC05 reçoit `$89` / `$92` pour ouvrir / fermer le tiroir ;
+l'explorateur s'ouvre et le tiroir se referme avec l'image choisie), ou
+menu Fichier > Ouvrir un disque (Ctrl+O) / Éjecter. Formats : `.cue` + `.bin` (un seul fichier BIN, pistes
 MODE1/MODE2/AUDIO en 2352 octets), `.bin`/`.img` brut (une piste CD-i),
 `.iso` (secteurs de 2048 octets).
 
@@ -150,16 +174,22 @@ et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
 | `EMU_EXC_LOG=1` | signale les exceptions CPU (erreur d'adresse, instruction illégale…) |
 | `EMU_UART_LOG=1` | recopie la console UART sur stderr |
 | `EMU_BREAK=1A96D0,1A9706` | à ces PC : 64 derniers PC, registres, pile, code |
+| `EMU_DUMP=adresse,taille` | (hexa) affiche aussi cette zone mémoire à chaque `EMU_BREAK` |
+| `EMU_PLANE_LOG=1` | toutes les 50 trames : pixels les plus fréquents de chaque plan et registres de mixage |
 | `EMU_SPEED=100` | vitesse en % du vrai CD-i (`0` = sans limite) |
 | `EMU_AUDIO=0` / `EMU_AUDIO_DUMP=son.wav` | coupe le son / enregistre le son en WAV |
 | `EMU_WATCH=E5100-E5200`, `EMU_WATCH_AFTER=n` | signale les écritures dans cette plage (et si c'est le DMA) |
 | `EMU_DMA_LOG=1` | journalise chaque transfert DMA CDIC ↔ mémoire |
-| `EMU_INPUT_REC=f.rec` / `EMU_INPUT_PLAY=f.rec` | enregistre / rejoue souris et clics au pas près (tests reproductibles) |
+| `EMU_INPUT_REC=f.rec` / `EMU_INPUT_PLAY=f.rec` | enregistre / rejoue souris, clics, disque choisi (OPEN) et commandes Ouvrir / Éjecter au pas près (tests reproductibles) |
+| `EMU_INPUT_LOG=1` | pendant un rejeu, affiche chaque changement des boutons |
 | `EMU_AUTOCLICK=x,y,pas` | clic automatique du bouton 1 (répété 8 fois) |
 | `EMU_NVRAM=nom` | fichiers NVRAM/horloge `nom.bin` / `nom.rtc` |
 | `EMU_CONSOLE=1` | affiche la console série au démarrage |
 | `EMU_SWAP_BUTTONS=0` | n'inverse pas les boutons de la souris |
 | `EMU_PACE_LOG=1` | histogramme des intervalles entre trames (régularité) |
+| `EMU_CPI=n` | durée fixe de n cycles par instruction au lieu des tables du SCC68070 (ancien comportement : 8) |
+| `EMU_CPU_STATS=1` | cycles moyens par instruction, tous les 50 millions d'instructions |
+| `EMU_HEADLESS=1` | fenêtre vidéo cachée (tests automatiques) |
 
 ---
 
@@ -235,7 +265,7 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 | CDIC : audio ADPCM (lecture disque) | ✅ Terminé |
 | CDIC : sons en mémoire (« ap ») | ✅ Terminé |
 | CDIC : audio CD-DA (CD audio) | 🔲 À démarrer |
-| Bouton OPEN : changer de disque | ⚠️ En cours |
+| Bouton OPEN : changer de disque | ✅ Terminé |
 | Émulation NVRAM + horloge (sauvegardes) | ✅ Terminé |
 | Entrées : pointeur via 68HC05 (HLE, absolu + relatif) | ✅ Terminé |
 | Vitesse réelle, plein écran 4:3, menus | ✅ Terminé |

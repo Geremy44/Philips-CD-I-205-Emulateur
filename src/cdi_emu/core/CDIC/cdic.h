@@ -45,6 +45,7 @@ typedef struct cdic_s {
 
     /* registers */
     uint16_t command, file, audio_channel;
+    uint16_t run_cmd;          /* read in progress (27..2C); $2E only updates filters */
     uint32_t time, channel;
     uint16_t abuf, xbuf, dmactl, audctl, ivec, dbuf;
 

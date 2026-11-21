@@ -53,18 +53,27 @@ void video_display_toggle_fullscreen(void);
 
 /* Show / hide the PC mouse cursor over the video window (F8) */
 void video_display_toggle_host_cursor(void);
+
+/* Called once per frame: relative = the game recentres the CD-i cursor
+ * (68HC05 relative mode); the PC mouse is then captured in the window and
+ * sent as impulses. cdi_x / cdi_y = CD-i cursor (pointer units), where
+ * the PC mouse is put back when the capture ends. */
+void video_display_pointer_mode(int relative, int cdi_x, int cdi_y);
 /* Show the PC cursor again (on exit) */
 void video_display_restore_host_cursor(void);
 
 /* Menu bar of the video window (native on Windows). The callback gets the
  * command id; video_display_menu_check() sets an item's check mark. */
 enum {
-    VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT,
+    VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT,
     VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
     VM_SWAP = 1201
 };
 typedef void (*video_menu_cb)(int id);
 void video_display_set_menu_cb(video_menu_cb cb);
 void video_display_menu_check(int id, int on);
+
+/* Windows file dialog for a disc image; 1 + UTF-8 path in out if chosen */
+int  video_display_choose_disc(char *out, int out_size);
 
 #endif /* VIDEO_DISPLAY_H */

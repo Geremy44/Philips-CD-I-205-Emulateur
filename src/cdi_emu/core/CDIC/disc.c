@@ -6,6 +6,21 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/* fopen() with a UTF-8 path (Windows paths may contain accents) */
+static FILE *fopen_u8(const char *path, const char *mode)
+{
+#ifdef _WIN32
+    wchar_t wp[1100], wm[8];
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wp, 1100) > 0 &&
+        MultiByteToWideChar(CP_UTF8, 0, mode, -1, wm, 8) > 0)
+        return _wfopen(wp, wm);
+#endif
+    return fopen(path, mode);
+}
 
 uint8_t disc_bcd(int v)       { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
 int     disc_unbcd(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
@@ -50,7 +65,7 @@ static int ext_is(const char *p, const char *e)
 /* Single-track image: the whole file is track 1 starting at LBA 0 */
 static int open_plain(disc_t *d, const char *path, int sector_size)
 {
-    d->f = fopen(path, "rb");
+    d->f = fopen_u8(path, "rb");
     if (!d->f) return -1;
     int64_t n = file_size(d->f);
     d->sector_size = sector_size;
@@ -65,7 +80,7 @@ static int open_plain(disc_t *d, const char *path, int sector_size)
 
 static int open_cue(disc_t *d, const char *cue)
 {
-    FILE *c = fopen(cue, "r");
+    FILE *c = fopen_u8(cue, "r");
     if (!c) return -1;
     char line[1024], bin[1100] = "";
     int cur = -1, nfiles = 0, sector = DISC_RAW;
@@ -106,7 +121,7 @@ static int open_cue(disc_t *d, const char *cue)
     if (nfiles > 1)
         fprintf(stderr, "[DISC] warning: %d FILE entries in the .cue, only the first is used\n", nfiles);
     if (!bin[0] || d->ntracks == 0) return -1;
-    d->f = fopen(bin, "rb");
+    d->f = fopen_u8(bin, "rb");
     if (!d->f) { fprintf(stderr, "[DISC] cannot open '%s'\n", bin); return -1; }
     d->sector_size = sector;
     d->leadout = (int)(file_size(d->f) / sector);

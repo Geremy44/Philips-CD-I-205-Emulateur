@@ -37,6 +37,8 @@ gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/CPU/m68k.c -o bin/m68k.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/CPU/scc68070_timing.c -o bin/scc68070_timing.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/CPU/m68k_ea.c -o bin/m68k_ea.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/CPU/m68k_ops.c -o bin/m68k_ops.o
@@ -67,7 +69,7 @@ if %errorlevel% neq 0 (
 )
 
 echo Linking executable...
-gcc -o bin/cdi_emu.exe bin/*.o -lSDL2main -lSDL2 -lSDL2_ttf -lm
+gcc -o bin/cdi_emu.exe bin/*.o -lSDL2main -lSDL2 -lSDL2_ttf -lcomdlg32 -lm
 
 if %errorlevel% neq 0 (
     echo Error linking executable

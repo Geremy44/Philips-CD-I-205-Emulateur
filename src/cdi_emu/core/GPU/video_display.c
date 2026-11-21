@@ -21,6 +21,7 @@
 #include <SDL2/SDL.h>
 #ifdef _WIN32
 #include <SDL2/SDL_syswm.h>
+#include <commdlg.h>
 #include <windows.h>
 #endif
 #include <stdio.h>
@@ -66,7 +67,8 @@ void video_display_init(void)
 
     win = SDL_CreateWindow("CD-i 205 - Video Output",
                            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-                           WIN_W, WIN_H, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+                           WIN_W, WIN_H,
+                           (getenv("EMU_HEADLESS") ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN) | SDL_WINDOW_RESIZABLE);   /* EMU_HEADLESS=1: tests */
     if (!win) {
         fprintf(stderr, "[video_display] SDL_CreateWindow error: %s\n", SDL_GetError());
         return;
@@ -171,6 +173,9 @@ static void create_menu(void)
     if (!SDL_GetWindowWMInfo(win, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
     HWND hwnd = info.info.win.window;
     HMENU file = CreatePopupMenu(), view = CreatePopupMenu(), ctl = CreatePopupMenu();
+    AppendMenuW(file, MF_STRING, VM_OPEN_DISC, L"Ouvrir un disque...\tCtrl+O");
+    AppendMenuW(file, MF_STRING, VM_EJECT,     L"\u00c9jecter le disque");
+    AppendMenuW(file, MF_SEPARATOR, 0, NULL);
     AppendMenuW(file, MF_STRING, VM_SAVE,      L"Sauvegarder l'\u00e9tat\tF5");
     AppendMenuW(file, MF_STRING, VM_LOAD,      L"Rappeler l'\u00e9tat\tF9");
     AppendMenuW(file, MF_STRING, VM_NEXT_SLOT, L"Slot suivant\tF6");
@@ -203,16 +208,88 @@ static void apply_host_cursor(void)
 void video_display_restore_host_cursor(void)
 {
     mouse_inside = 0;
+    SDL_SetRelativeMouseMode(SDL_FALSE);
     SDL_ShowCursor(SDL_ENABLE);
+}
+
+/* ===== Mouse capture while the game recentres the CD-i cursor =====
+ * Games that read the pointer as relative movement put the CD-i cursor
+ * back in place all the time; the PC mouse then wandered out of the
+ * window. While the 68HC05 is in that mode, SDL's relative mouse mode
+ * keeps the PC mouse in the window and its moves are sent as impulses.
+ * Released ~2 s after the game stops recentring (menus, shell), with the
+ * PC mouse put back under the CD-i cursor; F8 or leaving the window
+ * (Alt+Tab) also releases it. */
+static int capture = 0, capture_idle = 0, cap_acc_x = 0, cap_acc_y = 0;
+
+static void capture_set(int on, int cdi_x, int cdi_y)
+{
+    if (on == capture) return;
+    capture = on;
+    cap_acc_x = cap_acc_y = 0;
+    SDL_SetRelativeMouseMode(on ? SDL_TRUE : SDL_FALSE);
+    if (!on && win && ren) {                     /* PC mouse under the CD-i cursor */
+        float lx = (float)cdi_x * WIN_W / (frame_w ? frame_w : WIN_W);
+        float ly = (float)cdi_y * WIN_H / 560.0f;
+        int wx, wy;
+        SDL_RenderLogicalToWindow(ren, lx, ly, &wx, &wy);
+        SDL_WarpMouseInWindow(win, wx, wy);
+    }
+    apply_host_cursor();
+}
+
+void video_display_pointer_mode(int relative, int cdi_x, int cdi_y)
+{
+    static int headless = -1;
+    if (headless < 0) headless = getenv("EMU_HEADLESS") != NULL;
+    int focused = win && (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS);
+    if (headless || !focused || !hide_host_cursor) { capture_set(0, cdi_x, cdi_y); return; }
+    if (relative) {
+        capture_idle = 0;
+        if (mouse_inside) capture_set(1, cdi_x, cdi_y);
+    } else if (capture && ++capture_idle >= 100) {   /* 2 s at 50 Hz */
+        capture_set(0, cdi_x, cdi_y);
+    }
 }
 
 void video_display_toggle_host_cursor(void)
 {
     hide_host_cursor = !hide_host_cursor;
+    if (!hide_host_cursor) capture_set(0, ptr_x, ptr_y);
     apply_host_cursor();
     video_display_menu_check(VM_HOST_CURSOR, !hide_host_cursor);
     fprintf(stderr, "[video_display] PC mouse cursor %s over the video\n",
             hide_host_cursor ? "hidden" : "shown");
+}
+
+/* File dialog to choose a disc image. Returns 1 and a UTF-8 path in out. */
+int video_display_choose_disc(char *out, int out_size)
+{
+#ifdef _WIN32
+    if (win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP))
+        video_display_toggle_fullscreen();          /* the dialog must be visible */
+    SDL_ShowCursor(SDL_ENABLE);
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    HWND owner = (win && SDL_GetWindowWMInfo(win, &info)) ? info.info.win.window : NULL;
+    wchar_t file[1024] = L"";
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Images de disque CD-i (*.cue;*.bin;*.iso;*.img)\0*.cue;*.bin;*.iso;*.img\0Tous les fichiers\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = 1024;
+    ofn.lpstrTitle = L"Ins\u00e9rer un disque dans le CD-i";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    int ok = GetOpenFileNameW(&ofn);
+    apply_host_cursor();
+    if (!ok) return 0;
+    return WideCharToMultiByte(CP_UTF8, 0, file, -1, out, out_size, NULL, NULL) > 0;
+#else
+    (void)out; (void)out_size;
+    return 0;
+#endif
 }
 
 /* F11 / Alt+Enter: window <-> full screen (desktop resolution, 4:3 kept) */
@@ -253,6 +330,16 @@ int video_display_handle_event(const void *ev)
         return 0;                       /* let the console handle close, etc. */
     case SDL_MOUSEMOTION:
         if (e->motion.windowID != window_id) return 0;
+        if (capture) {                          /* moves -> impulses (pointer units) */
+            cap_acc_x += e->motion.xrel * frame_w;
+            cap_acc_y += e->motion.yrel * 560;
+            int dx = cap_acc_x / WIN_W, dy = cap_acc_y / WIN_H;
+            cap_acc_x -= dx * WIN_W;
+            cap_acc_y -= dy * WIN_H;
+            if ((dx || dy) && pointer_cb)
+                pointer_cb(pointer_ctx, dx, dy, ptr_buttons | VIDEO_PTR_IMPULSE);
+            return 1;
+        }
         window_to_pointer(e->motion.x, e->motion.y);
         pointer_report();
         return 1;
@@ -262,8 +349,12 @@ int video_display_handle_event(const void *ev)
         int bit = (e->button.button == SDL_BUTTON_LEFT)  ? 1 :
                   (e->button.button == SDL_BUTTON_RIGHT) ? 2 : 0;
         if (!bit) return 1;
-        window_to_pointer(e->button.x, e->button.y);
         if (e->type == SDL_MOUSEBUTTONDOWN) ptr_buttons |= bit; else ptr_buttons &= ~bit;
+        if (capture) {                          /* no move, only the buttons */
+            if (pointer_cb) pointer_cb(pointer_ctx, 0, 0, ptr_buttons | VIDEO_PTR_IMPULSE);
+            return 1;
+        }
+        window_to_pointer(e->button.x, e->button.y);
         pointer_report();
         return 1;
     }
@@ -271,6 +362,10 @@ int video_display_handle_event(const void *ev)
     case SDL_KEYUP: {
         if (e->key.windowID != window_id) return 0;
         int down = (e->type == SDL_KEYDOWN);
+        if (down && !e->key.repeat && e->key.keysym.sym == SDLK_o && (SDL_GetModState() & KMOD_CTRL)) {
+            if (menu_cb) menu_cb(VM_OPEN_DISC);
+            return 1;
+        }
         if (down && !e->key.repeat && (e->key.keysym.sym == SDLK_RETURN || e->key.keysym.sym == SDLK_KP_ENTER)
             && (SDL_GetModState() & KMOD_ALT)) {
             video_display_toggle_fullscreen();
@@ -442,12 +537,40 @@ int video_display_update(void *scc66470, void *bus)
         }
     }
 
-    /* Back-end processor: apply this frame's BEP CONTROL words in order
-     * (both VSCs drive the V.S.D. command port) */
-    for (int i = 0; i < frame->bep_count; i++)
-        vsd_command(&vsd, frame->bep[i]);
-    for (int i = 0; i < frame_b->bep_count; i++)
-        vsd_command(&vsd, frame_b->bep[i]);
+    /* Back-end processor: both VSCs drive the V.S.D. command port. The
+     * ICA words apply before the frame, the DCA words from their line on
+     * (games change the image contribution factors, CLUT, ... mid-screen). */
+    int bep_ia = 0, bep_ib = 0;
+#define BEP_UPTO(row) do {         while (bep_ia < frame->bep_count && frame->bep_line[bep_ia] <= (row))             vsd_command(&vsd, frame->bep[bep_ia++]);         while (bep_ib < frame_b->bep_count && frame_b->bep_line[bep_ib] <= (row))             vsd_command(&vsd, frame_b->bep[bep_ib++]);     } while (0)
+    BEP_UPTO(-1);
+
+    /* EMU_PLANE_LOG=1: every 50 frames, the most used pixel values of each
+     * plane and the mixing registers (black picture hunting) */
+    if (getenv("EMU_PLANE_LOG")) {
+        static int nf = 0;
+        if (++nf % 50 == 0) {
+            for (int pl = 0; pl < 2; pl++) {
+                const scc_frame_t *f = pl ? frame_b : frame;
+                static int hist[256];
+                memset(hist, 0, sizeof(hist));
+                for (int y = 0; y < f->height; y++)
+                    for (int x = 0; x < f->width; x++) hist[f->pix[y * SCC_OUT_MAX_W + x]]++;
+                fprintf(stderr, "[PLANE %c] f%d en=%d %dx%d:", pl ? 'B' : 'A', nf, f->enabled, f->width, f->height);
+                for (int k = 0; k < 5; k++) {
+                    int best = 0;
+                    for (int i = 1; i < 256; i++) if (hist[i] > hist[best]) best = i;
+                    if (!hist[best]) break;
+                    fprintf(stderr, " %02X:%d(%06X)", best, hist[best], (unsigned)vsd.clut[best]);
+                    hist[best] = 0;
+                }
+                fprintf(stderr, "\n");
+            }
+            fprintf(stderr, "[PLANE] icm=%06X tcr=%06X order=%X transp=%06X/%06X mask=%06X/%06X w=%X/%X\n",
+                    (unsigned)vsd.icm, (unsigned)vsd.tcr, (unsigned)vsd.plane_order,
+                    (unsigned)vsd.transp_a, (unsigned)vsd.transp_b, (unsigned)vsd.mask_a,
+                    (unsigned)vsd.mask_b, (unsigned)vsd.weight_a, (unsigned)vsd.weight_b);
+        }
+    }
 
     int w = frame->width, h = frame->height;
     frame_w = w; frame_h = h;
@@ -456,9 +579,10 @@ int video_display_update(void *scc66470, void *bus)
         memset(pixels, 0, (size_t)SCC_OUT_MAX_W * SCC_OUT_MAX_H * sizeof(uint32_t));
     } else {
         int wb = frame_b->width, hb = frame_b->height;
-        int dyuv_a = vsd_plane_dyuv(&vsd, 0), dyuv_b = vsd_plane_dyuv(&vsd, 1);
         static uint32_t line_a[SCC_OUT_MAX_W], line_b[SCC_OUT_MAX_W];
         for (int y = 0; y < h; y++) {
+            BEP_UPTO(y);
+            int dyuv_a = vsd_plane_dyuv(&vsd, 0), dyuv_b = vsd_plane_dyuv(&vsd, 1);
             const uint8_t *src_a = &frame->pix[y * SCC_OUT_MAX_W];
             const uint8_t *src_b = &frame_b->pix[y * SCC_OUT_MAX_W];
             uint32_t *dst = &pixels[y * SCC_OUT_MAX_W];
@@ -473,6 +597,8 @@ int video_display_update(void *scc66470, void *bus)
         }
         vsd_draw_cursor(&vsd, pixels, w, h, SCC_OUT_MAX_W);
     }
+    BEP_UPTO(0x7FFF);                                 /* words past the last line */
+#undef BEP_UPTO
 
     dump_frame_if_changed(w, h);
 
