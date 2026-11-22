@@ -35,6 +35,7 @@ typedef struct vsd {
     uint32_t dyuv_start_a, dyuv_start_b;   /* Y:U:V start of each line */
     uint32_t cursor_pos, cursor_ctrl;
     uint16_t cursor_pat[16];
+    uint32_t region[8];        /* region control D0-D7: op 23-20, flag 16, weight 15-10, X 9-0 */
     uint32_t unknown_count;    /* commands not interpreted */
 } vsd_t;
 
@@ -45,6 +46,10 @@ void     vsd_command(vsd_t *v, uint32_t word);
  * pixel values into ARGB8888. a_on / b_on: that VSC is displaying (DE). */
 extern int      vsd_ext_on;            /* set per pixel: external video replaces the backdrop */
 extern uint32_t vsd_ext_rgb;
+/* region flags 0 / 1 for the pixel being mixed (vsd_region_flags) */
+extern int      vsd_rflag[2];
+/* region flags at X (0..767, high-resolution pixels) of the current line */
+void     vsd_region_flags(const vsd_t *v, int x, int flag[2]);
 uint32_t vsd_mix(const vsd_t *v, uint8_t a, int a_on, uint8_t b, int b_on);
 
 /* Same, with an already decoded RGB for a plane coded in DYUV

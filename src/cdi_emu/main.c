@@ -31,9 +31,42 @@
 #include "core/rtc_m48t08.h"
 #include "core/CDIC/cdrom_win.h"
 #include "core/FMV/fmv.h"
+#include "core/rom_import.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
+
+#define ROM_DIR "./ROM"
+
+/* Fichier > Importer des ROM: choose dumps, merge / check them, write ROM/.
+ * Returns the ROM_IMPORTED_* mask. */
+static int import_roms_dialog(void)
+{
+    char **files = NULL;
+    int n = video_display_choose_files("Importer les ROM (console, EPROM de la cartouche FMV)", &files);
+    if (n <= 0) return 0;
+    static char msg[4096];
+    int done = rom_import_files((const char *const *)files, n, ROM_DIR, msg, sizeof(msg));
+    for (int i = 0; i < n; i++) free(files[i]);
+    free(files);
+    fprintf(stderr, "[ROM] import:\n%s", msg);
+    if (done & ROM_IMPORTED_FMV && !fmv_rom_loaded())
+        fmv_init(ROM_DIR "/" ROM_FMV_FILE);             /* cartridge available now */
+    if (done & ROM_IMPORTED_CONSOLE)
+        strncat(msg, "\nLa nouvelle ROM console sera utilis\xC3\xA9" "e au prochain lancement.", sizeof(msg) - strlen(msg) - 1);
+    video_display_message("Importer des ROM", msg);
+    return done;
+}
+
+/* Console ROM: ROM/<name>.bin (written by the import) or the Intel HEX dump */
+static int load_console_rom(bus_t *bus)
+{
+    FILE *f = fopen(ROM_DIR "/" ROM_CONSOLE_FILE, "rb");
+    if (f) { fclose(f); if (bus_load_rom_bin(bus, ROM_DIR "/" ROM_CONSOLE_FILE) == 0) return 0; }
+    f = fopen(ROM_DIR "/CDI205-00_PS-7211_REL.2.1.hex", "r");
+    if (f) { fclose(f); return bus_load_ihex(bus, ROM_DIR "/CDI205-00_PS-7211_REL.2.1.hex"); }
+    return -1;
+}
 
 /* ---- Save / recall hotkeys (NVRAM + clock) ----
  *   F5 = save to the current slot, F9 = recall it, F6 = next slot (1..9) */
@@ -220,6 +253,9 @@ static void menu_action(int id)
         video_display_menu_check(VM_FMV, fmv_enabled());
         g_reset_request = 1;                            /* CD-RTOS looks for it at boot */
         break;
+    case VM_IMPORT_ROM:
+        import_roms_dialog();
+        break;
     case VM_RESET:                                      /* reset button: warm reboot */
         g_reset_request = 1;
         break;
@@ -336,6 +372,14 @@ int main(int argc, char* argv[]) {
     setvbuf(stderr, NULL, _IOFBF, 65536);
 
     printf("=== CD-I 205 Emulator ===\n");
+
+    /* cdi205 --import-rom <files...>: merge / check the dumps into ROM/ and quit */
+    if (argc >= 2 && strcmp(argv[1], "--import-rom") == 0) {
+        static char msg[4096];
+        int done = rom_import_files((const char *const *)&argv[2], argc - 2, ROM_DIR, msg, sizeof(msg));
+        printf("%s", msg);
+        return done ? 0 : 1;
+    }
     SDL_SetMainReady();
     SDL_SetHint(SDL_HINT_TIMER_RESOLUTION, "1");   /* 1 ms sleeps on Windows */
 
@@ -345,9 +389,26 @@ int main(int argc, char* argv[]) {
 
     /* --- Initialize the bus and load the firmware ROM --- */
     bus_t *bus = bus_create();
-    if (bus_load_ihex(bus, "./ROM/CDI205-00_PS-7211_REL.2.1.hex") != 0) {
-        fprintf(stderr,"Failed to load ROM\n");
-        bus_destroy(bus); return 1;
+    while (load_console_rom(bus) != 0) {
+        /* no console ROM yet: offer to import the user's dumps */
+        fprintf(stderr, "Failed to load ROM (" ROM_DIR "/" ROM_CONSOLE_FILE " or .hex)\n");
+        const SDL_MessageBoxButtonData buttons[] = {
+            { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Importer les ROM..." },
+            { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Quitter" },
+        };
+        const SDL_MessageBoxData box = {
+            SDL_MESSAGEBOX_INFORMATION, NULL, "CD-i 205 - ROM introuvable",
+            "La ROM de la console (CDI205-00_PS-7211_REL.2.1) n'est pas dans le dossier ROM.\n"
+            "Les ROM ne sont pas fournies : choisissez vos propres dumps\n"
+            "(console en .hex ou .bin, et si vous l'avez la cartouche FMV :\n"
+            "ROM fusionn\xC3\xA9" "e ou les deux EPROM P7307 et P7308).",
+            2, buttons, NULL
+        };
+        int choice = 0;
+        if (getenv("EMU_HEADLESS") || SDL_ShowMessageBox(&box, &choice) != 0 || choice != 1
+            || !(import_roms_dialog() & ROM_IMPORTED_CONSOLE)) {
+            bus_destroy(bus); return 1;
+        }
     }
     if (getenv("EMU_ROM_DUMP")) {                 /* debug: the ROM as loaded */
         FILE *rf = fopen(getenv("EMU_ROM_DUMP"), "wb");

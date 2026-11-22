@@ -42,5 +42,6 @@ void     fmva_tick(void);
 void     fmva_poll(void);                /* video chip timer tick */
 int      fmva_irq_pending(void);
 uint8_t  fmva_vector(void);
+int      fmva_wants_data(void);
 
 #endif

@@ -58,7 +58,7 @@ void vsd_command(vsd_t *v, uint32_t w)
     case 0xDB: v->weight_a    = data; break;
     case 0xDC: v->weight_b    = data; break;
     default:
-        if (op >= 0xD0 && op <= 0xD7) break;   /* region control: not modelled */
+        if (op >= 0xD0 && op <= 0xD7) { v->region[op & 7] = data; break; }   /* region control */
         v->unknown_count++;
         break;
     }
@@ -96,12 +96,14 @@ static int plane_transparent(uint32_t mode, uint32_t rgb, uint32_t key, uint32_t
     int keyed = ((rgb & cmp) == (key & cmp));
     /* MCD212 encoding: 0 always, 1 colour key, 2 RGB555 transparency bit,
      * 3/4 region (matte) flag 0/1, 5/6 matte flag 0/1 OR colour key.
-     * Region flags and the T bit are not emulated (taken as 0). */
+     * The RGB555 T bit is not emulated (taken as 0). */
     switch (mode & 7) {
     case 0:  cond = 1; break;
     case 1:  cond = keyed; break;
-    case 5:
-    case 6:  cond = keyed; break;
+    case 3:  cond = vsd_rflag[0]; break;
+    case 4:  cond = vsd_rflag[1]; break;
+    case 5:  cond = vsd_rflag[0] || keyed; break;
+    case 6:  cond = vsd_rflag[1] || keyed; break;
     default: cond = 0; break;
     }
     return (mode & 8) ? !cond : cond;
@@ -168,6 +170,23 @@ static uint32_t scale_rgb(uint32_t rgb, uint32_t icf)
  * pixel being mixed: it takes the place of the backdrop */
 int      vsd_ext_on = 0;
 uint32_t vsd_ext_rgb = 0;
+int      vsd_rflag[2] = { 0, 0 };
+
+/* Region control (D0-D7), as the Journal interactif uses it: bit 23 set =
+ * the region changes a flag at X; bit 20 = the new value (8 reset, 9 set),
+ * bit 16 = flag 0 / 1. Flags start each line at 0; changes apply in X
+ * order. Weight changes (other op codes) are not modelled. */
+void vsd_region_flags(const vsd_t *v, int x, int flag[2])
+{
+    flag[0] = flag[1] = 0;
+    int best_x[2] = { -1, -1 };
+    for (int i = 0; i < 8; i++) {
+        uint32_t r = v->region[i];
+        if (!(r & 0x800000u)) continue;
+        int rx = (int)(r & 0x3FF), f = (r >> 16) & 1;
+        if (rx <= x && rx >= best_x[f]) { best_x[f] = rx; flag[f] = (r >> 20) & 1; }
+    }
+}
 
 uint32_t vsd_mix(const vsd_t *v, uint8_t a, int a_on, uint8_t b, int b_on)
 {

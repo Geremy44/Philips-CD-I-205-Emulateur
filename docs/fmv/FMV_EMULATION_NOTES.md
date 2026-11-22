@@ -111,15 +111,25 @@ EOD n'était jamais signalée. Quand la file d'affichage est vide, la
 référence retenue est maintenant affichée (c'est la suivante dans l'ordre).
 Reproduit et vérifié par rejeu de la partie enregistrée (`partie.rec`).
 
+Journal interactif (22/11/2026, rejeu d'une partie enregistrée) :
+- Son haché : après le menu, le pilote envoyait l'audio environ 3 fois plus
+  vite que la lecture ; la file pleine jetait le surplus. La puce audio ne
+  prend maintenant un transfert DMA que si sa file contient moins de 12 Ko ;
+  sinon le canal 2 reste actif (CSR bit 3) jusqu'à ce qu'il y ait de la place.
+  Débit mesuré ensuite : environ 24 Ko/s, file stable autour de 13 Ko.
+- Photos absentes du menu « Choisissez un rédacteur en chef » : le plan B a
+  la transparence 0xB (« transparent si drapeau de région 0 faux »). Les
+  registres de région D0-D7 n'étaient pas émulés. Valeurs écrites par le
+  jeu ligne par ligne : 90FC6E / 90FD36 (mettre le drapeau 0 à 1 en X = 110
+  ou 310) et 80FEB4 / 80FC00 (le remettre à 0 en X = 692 ou 0). Format
+  retenu : bit 23 = change un drapeau, bit 20 = nouvelle valeur, bit 16 =
+  drapeau 0 / 1, bits 9-0 = X en pixels haute résolution, drapeaux à 0 en
+  début de ligne. Les changements de poids par région ne sont pas émulés.
+
 ## Prochaines étapes
 
 - *The 7th Guest* : vérifier en vrai au-delà de l'escalier ; quelques
   artefacts d'image par moments.
-- Journal interactif, bouton 2 (menu) puis bouton 1 au centre (le jeu) :
-  le menu s'affiche, mais les 2×4 photos (centrées à gauche) et la ligne de
-  4 images avec silhouette noire (en haut à droite) ne sont pas dessinées
-  par-dessus.
 - Position / taille de l'image selon les registres de fenêtre ; synchro
   son / image.
-- Le pilote audio envoie parfois plus vite que la lecture (surplus écarté) :
-  modéliser la demande de transfert de la puce audio selon sa file.
+- Journal interactif : quelques artefacts d'image par moments.

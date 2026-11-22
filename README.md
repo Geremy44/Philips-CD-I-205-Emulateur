@@ -110,7 +110,8 @@ la cartouche FMV (MPEG, nécessaire par exemple pour *The 7th Guest*).
 numérique (MPEG)**, désactivée par défaut, mémorisée dans `options.ini`
 (`EMU_FMV=1` / `0` la force) ; le changement provoque un reset, CD-RTOS ne
 cherchant la cartouche qu'au démarrage. Il faut sa ROM dans
-`ROM/FMV_combined_7308hi_7307lo.bin` (EPROM P7307 + P7308 R4.1, non fournie).
+`ROM/FMV_combined_7308hi_7307lo.bin` (EPROM P7307 + P7308 R4.1, non fournie ;
+l'import des ROM fusionne les deux EPROM).
 Émulées : la ROM en `$E40000`, le 1 Mo de mémoire en `$D00000`, la DRAM vidéo
 en `$E80000`, la puce vidéo MPEG-1 (`$E04000`) et la puce audio (`$E03000`)
 avec leurs registres, leurs interruptions (niveau 4, vectorisées) et leurs
@@ -136,7 +137,7 @@ Détails : `docs/fmv/FMV_EMULATION_NOTES.md`.
 | *Kether* | 🟡 Lancement OK, pas testé complètement | Semble bien fonctionner (image, son, sons en mémoire) |
 | *Harvest of the Sun* (visite interactive sur Van Gogh) | 🟡 Lancement OK, pas testé complètement | Images propres, fondus et son OK |
 | *L'Open de Palm Springs* | 🟡 Lancement OK, pas testé complètement | Fonctionne bien |
-| *Journal interactif 94* (TF1, disque 2) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : vidéo MPEG à 25 images/s et son MPEG (tests sans fenêtre) ; sans elle, « Votre carte numérique n'est pas installée », comme un vrai 205 |
+| *Journal interactif 94* (TF1, disque 2) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : vidéo et son MPEG, menu des rédacteurs avec ses photos ; quelques artefacts d'image ; sans elle, « Votre carte numérique n'est pas installée », comme un vrai 205 |
 
 ### Charger un disque
 
@@ -264,6 +265,7 @@ src/cdi_emu/
 └── core/
     ├── bus.c/h               ← carte mémoire et routage MMIO
     ├── rom_loader.c/h        ← chargeur Intel HEX
+    ├── rom_import.c/h        ← import / fusion des dumps de ROM (console, EPROM FMV)
     ├── rtc_m48t08.c/h        ← horloge M48T08 (RTC) de la NVRAM
     ├── CPU/
     │   ├── m68k*.c/h         ← CPU 68070 (décodage, modes d'adressage, exceptions)
@@ -374,11 +376,46 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 
 ---
 
+## 💾 ROM : import et fusion
+
+Les ROM ne sont pas fournies : il faut les dumps de votre propre matériel.
+L'émulateur les importe, les vérifie et fusionne les EPROM séparées, puis
+écrit dans `ROM/` (à côté de l'exécutable) :
+
+| Fichier écrit | Contenu |
+|---------------|---------|
+| `ROM/CDI205-00_PS-7211_REL.2.1.bin` | ROM de la console (512 Ko), obligatoire |
+| `ROM/FMV_combined_7308hi_7307lo.bin` | ROM de la cartouche Digital Video (128 Ko), facultative |
+
+**Trois façons de lancer l'import :**
+- au premier lancement sans ROM, l'émulateur propose **Importer les ROM...** ;
+- à tout moment : menu **Fichier > Importer des ROM...** (sélection de
+  plusieurs fichiers) ;
+- en ligne de commande, y compris sous Linux :
+  ```bash
+  cdi205 --import-rom "CDI205-00_PS-7211_REL.2.1.hex" "P7307.bin" "P7308.bin"
+  ```
+
+**Fichiers acceptés** (Intel HEX ou binaire brut, reconnus par leur taille
+et leur somme de contrôle, quel que soit leur nom) :
+- **Console** : un dump de 512 Ko (`.hex` ou `.bin`), contrôlé avec la somme
+  rangée dans la ROM (`53A6` pour PS-7211 REL 2.1). Un dump aux octets
+  inversés est remis dans l'ordre ; deux moitiés de 256 Ko sont réassemblées
+  (entrelacées ou bout à bout).
+- **Cartouche FMV** : les deux EPROM de 64 Ko, **P7308** (octets pairs,
+  étiquette `FFD9`) et **P7307** (octets impairs, étiquette `4BA9`),
+  reconnues par leur somme et fusionnées octet par octet ; ou une ROM déjà
+  fusionnée de 128 Ko. Le résultat doit commencer par l'en-tête de module
+  OS-9 `4AFC`.
+
+L'ancien dump Intel HEX `ROM/CDI205-00_PS-7211_REL.2.1.hex` reste lu si le
+`.bin` est absent.
+
+---
+
 ## 🛠️ Compilation
 
-Les ROM ne sont pas fournies. Placer la ROM système
-`CDI205-00_PS-7211_REL.2.1.hex` dans `src/cdi_emu/ROM/` et, pour la
-cartouche FMV, `FMV_combined_7308hi_7307lo.bin` dans le même dossier.
+Les ROM ne sont pas fournies : voir [ROM : import et fusion](#-rom--import-et-fusion).
 
 ### Windows (MSYS2 UCRT64)
 

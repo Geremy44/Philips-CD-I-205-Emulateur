@@ -392,6 +392,22 @@ int bus_load_ihex(bus_t *b, const char *path) {
     return 0;
 }
 
+int bus_load_rom_bin(bus_t *b, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    static uint8_t buf[0x80000];
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    int extra = fgetc(f);
+    fclose(f);
+    if (n != sizeof(buf) || extra != EOF || sizeof(b->rom) < sizeof(buf)) {
+        fprintf(stderr, "ROM %s: 524288 bytes expected\n", path);
+        return -1;
+    }
+    /* same byte pairing as the Intel HEX loader */
+    for (size_t i = 0; i < sizeof(buf); i++) b->rom[i ^ 1] = buf[i];
+    return 0;
+}
+
 /* ===== Stub handlers for unmapped I/O ===== */
 
 static uint16_t io_read_stub(uint32_t addr) {
@@ -563,7 +579,10 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
         if (is_dma_csr(addr)) { io_regs[addr - IO_BASE] &= (uint8_t)~v; return; }  /* write 1 to clear */
         if ((addr & 0xFFFF00) == 0x002000) { uart_write8(b, addr, v); return; }
         io_regs[addr - IO_BASE] = v;
-        if (addr == IO_BASE + DMA1 + 0x40 + DMA_CCR && (v & 0x80)) { dma2_bus = b; fmv_dma_started(); }
+        if (addr == IO_BASE + DMA1 + 0x40 + DMA_CCR && (v & 0x80)) {
+            io_regs[DMA1 + 0x40 + DMA_CSR] |= 0x08;   /* active until the cartridge takes the data */
+            dma2_bus = b; fmv_dma_started();
+        }
         return;
     }
 

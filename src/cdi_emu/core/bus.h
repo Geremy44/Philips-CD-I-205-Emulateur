@@ -40,6 +40,8 @@ void   bus_destroy(bus_t *b);
 
 /* Load a ROM image from an Intel HEX file into the bus ROM region */
 int    bus_load_ihex(bus_t *b, const char *path);
+/* raw 512 KB console ROM in the byte order of the dumps (as ROM import writes it) */
+int    bus_load_rom_bin(bus_t *b, const char *path);
 
 /* Global bus accessor (used by UART callbacks that lack a bus pointer) */
 bus_t *bus_get_global(void);

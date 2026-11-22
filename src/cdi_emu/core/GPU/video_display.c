@@ -207,6 +207,7 @@ static void create_menu(void)
     AppendMenuW(file, MF_STRING, VM_OPEN_DISC, L"Ouvrir un disque...\tCtrl+O");
     AppendMenuW(file, MF_STRING, VM_EJECT,     L"\u00c9jecter le disque");
     AppendMenuW(file, MF_STRING, VM_RESET,     L"R\u00e9initialiser le CD-i\tCtrl+R");
+    AppendMenuW(file, MF_STRING, VM_IMPORT_ROM, L"Importer des ROM...");
     {   /* every CD / DVD / BD drive of the PC */
         char drives[26];
         int nd = cdrom_list_drives(drives, 26);
@@ -348,6 +349,61 @@ int video_display_choose_disc(char *out, int out_size)
     return WideCharToMultiByte(CP_UTF8, 0, file, -1, out, out_size, NULL, NULL) > 0;
 #else
     (void)out; (void)out_size;
+    return 0;
+#endif
+}
+
+int video_display_choose_files(const char *title, char ***out)
+{
+    *out = NULL;
+#ifdef _WIN32
+    if (win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP))
+        video_display_toggle_fullscreen();          /* the dialog must be visible */
+    SDL_ShowCursor(SDL_ENABLE);
+    SDL_SysWMinfo info;
+    SDL_VERSION(&info.version);
+    HWND owner = (win && SDL_GetWindowWMInfo(win, &info)) ? info.info.win.window : NULL;
+    static wchar_t buf[16384];
+    wchar_t wtitle[256];
+    buf[0] = 0;
+    MultiByteToWideChar(CP_UTF8, 0, title, -1, wtitle, 256);
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"Dumps de ROM (*.bin;*.hex;*.rom)\0*.bin;*.hex;*.rom\0Tous les fichiers\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = 16384;
+    ofn.lpstrTitle = wtitle;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR
+              | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+    int ok = GetOpenFileNameW(&ofn);
+    apply_host_cursor();
+    if (!ok) return 0;
+    /* one file: its full path; several: the folder, then the names */
+    const wchar_t *dir = buf, *p = buf + wcslen(buf) + 1;
+    char **list = calloc(64, sizeof(char *));
+    int n = 0;
+    if (!list) return 0;
+    if (!*p) {
+        if ((list[0] = malloc(4096)) != NULL) {
+            WideCharToMultiByte(CP_UTF8, 0, dir, -1, list[0], 4096, NULL, NULL);
+            n = 1;
+        }
+    } else {
+        for (; *p && n < 64; p += wcslen(p) + 1) {
+            wchar_t full[4096];
+            _snwprintf(full, 4096, L"%ls\\%ls", dir, p);
+            full[4095] = 0;
+            if ((list[n] = malloc(4096)) == NULL) break;
+            WideCharToMultiByte(CP_UTF8, 0, full, -1, list[n], 4096, NULL, NULL);
+            n++;
+        }
+    }
+    *out = list;
+    return n;
+#else
+    (void)title;
     return 0;
 #endif
 }
@@ -670,6 +726,7 @@ int video_display_update(void *scc66470, void *bus)
             vsd_ext_on = 0;
             for (int x = 0; x < w; x++) {
                 if (ext) vsd_ext_on = fmv_video_pixel(x * 384 / w, y, &vsd_ext_rgb);
+                vsd_region_flags(&vsd, x * 768 / w, vsd_rflag);
                 int b_on = frame_b->enabled && x < wb && y < hb;
                 dst[x] = vsd_mix_rgb(&vsd, src_a[x], frame->enabled, dyuv_a ? &line_a[x] : NULL,
                                      b_on ? src_b[x] : 0, b_on, (dyuv_b && b_on) ? &line_b[x] : NULL);

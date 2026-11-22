@@ -146,6 +146,7 @@ static void to_chip(uint16_t w)
 static void run_dma(void)
 {
     if (drq_pending < 0) return;
+    if (drq_pending == 1 && !fmva_wants_data()) return;   /* audio FIFO full: wait */
     xfer_audio = drq_pending;
     int n = bus_dma2_transfer(to_chip);
     if (n < 0) return;                             /* channel not started yet */
@@ -176,6 +177,7 @@ void fmv_tick(int cycles)
     if (fmv_now >= vblank_end_at) { vblank_end_at = FMV_NEVER; fmvv_vblank(0); }
     fmvv_tick();
     fmva_tick();
+    if (drq_pending == 1) run_dma();               /* audio FIFO has room again? */
 }
 
 void fmv_frame(void)

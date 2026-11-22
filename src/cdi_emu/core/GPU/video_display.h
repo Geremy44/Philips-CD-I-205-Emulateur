@@ -70,6 +70,10 @@ void video_display_reset_vsd(void);
 /* Window title (NULL = the normal one) and a message box */
 void video_display_set_title(const char *title);
 void video_display_message(const char *title, const char *text);
+/* Multi-selection file dialog (ROM dumps). Returns the number of files and
+ * a malloc'd array of malloc'd UTF-8 paths in *out (0 if cancelled or not
+ * available on this system). */
+int  video_display_choose_files(const char *title, char ***out);
 /* Show the PC cursor again (on exit) */
 void video_display_restore_host_cursor(void);
 
@@ -77,6 +81,7 @@ void video_display_restore_host_cursor(void);
  * command id; video_display_menu_check() sets an item's check mark. */
 enum {
     VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT, VM_RESET,
+    VM_IMPORT_ROM,
     VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
     VM_SWAP = 1201, VM_INPUT_CONFIG, VM_MOUSE,
     VM_FMV = 1401,           /* Materiel > Digital Video Cartridge */

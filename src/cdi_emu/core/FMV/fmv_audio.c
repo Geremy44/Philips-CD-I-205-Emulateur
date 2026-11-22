@@ -68,6 +68,12 @@ void fmva_reset(void)
 }
 
 int fmva_irq_pending(void) { return (isr & ier) != 0; }
+
+/* The chip asks for data only while its input FIFO has room: the host DMA
+ * is then paced by playback (otherwise the driver sends far ahead and the
+ * surplus would be lost, which chops the sound). */
+#define FIFO_ROOM_LIMIT (12 * 1024)
+int fmva_wants_data(void) { return plm_buffer_get_remaining(es) < FIFO_ROOM_LIMIT; }
 uint8_t fmva_vector(void) { return (uint8_t)ivec; }
 void fmva_poll(void) { isr |= FMA_POLL; }
 

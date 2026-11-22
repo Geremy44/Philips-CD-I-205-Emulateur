@@ -5,13 +5,6 @@ echo CD-i 205 Emulator Build & Test Script
 echo ========================================
 echo.
 
-REM Check if we have the required ROM files
-if not exist "ROM\CDI205-00_PS-7211_REL.2.1.hex" (
-    echo ERROR: Required ROM file not found!
-    echo Please ensure ROM\CDI205-00_PS-7211_REL.2.1.hex exists
-    exit /b 1
-)
-
 echo Building CD-i 205 Emulator with GCC...
 
 REM Create output directory if it doesn't exist
@@ -22,6 +15,8 @@ gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/bus.c -o bin/bus.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/rom_loader.c -o bin/rom_loader.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/rom_import.c -o bin/rom_import.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/rtc_m48t08.c -o bin/rtc_m48t08.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
