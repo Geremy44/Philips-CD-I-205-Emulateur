@@ -428,9 +428,29 @@ cartouche FMV, `FMV_combined_7308hi_7307lo.bin` dans le même dossier.
 
 Documentation de reverse-engineering à fins éducatives uniquement. Voir avertissement légal en tête de fichier.
 
-L'émulateur inclut [pl_mpeg](https://github.com/phoboslab/pl_mpeg) (MIT) et un portage en C de
-l'émulation de la cartouche FMV de MAME ([#16181](https://github.com/mamedev/mame/pull/16181), BSD-3-Clause).
-Leurs mentions de copyright et textes de licence sont dans [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+Les mentions de copyright et textes de licence des composants tiers sont
+dans [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) et le dossier
+[`licenses/`](licenses/).
+
+## 🙏 Crédits
+
+- **pl_mpeg** — Dominic Szablewski (MIT) : décodage MPEG-1 vidéo et audio
+  de la cartouche FMV.
+- **MAME**, demande de fusion [#16181](https://github.com/mamedev/mame/pull/16181)
+  — Alexandre Derumier (BSD-3-Clause) : comportement des puces de la
+  cartouche Digital Video, porté en C.
+- **CDi_MiSTer** — Andre Zeps : le cœur FPGA dont ce travail de MAME est issu.
+- **SDL2 / SDL2_ttf** — Sam Lantinga et les contributeurs SDL (zlib) :
+  fenêtre, son, entrées et texte.
+- **FreeType**, **HarfBuzz**, **GLib**, **gettext**, **libiconv**, **Graphite**,
+  **PCRE2**, **libpng**, **zlib**, **bzip2**, **Brotli**, **GCC**, **mingw-w64**
+  : bibliothèques livrées avec la version Windows (paquets MSYS2). Portions of
+  this software are copyright © 2023 The FreeType Project (www.freetype.org).
+  All rights reserved.
+
+Philips et CD-i sont des marques de leurs propriétaires respectifs. Ce
+projet n'est ni affilié à Philips ni approuvé par Philips ; aucune ROM ni
+image de disque n'est fournie.
 
 ---
 
