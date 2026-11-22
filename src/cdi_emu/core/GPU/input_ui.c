@@ -176,3 +176,6 @@ void input_ui_render(SDL_Renderer *ren)
          : "Clic : assigner   -   clic droit : effacer   -   \xC3\x89" "chap : fermer",
          PX + 22, BTN_Y + 50, grey, 0);
 }
+
+/* Font shared with the F3 statistics overlay */
+TTF_Font *input_ui_font(int size) { return load_font(size); }

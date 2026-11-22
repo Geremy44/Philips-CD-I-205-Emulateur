@@ -408,6 +408,7 @@ void scc66470_render(const scc66470_t *v, const uint8_t *dram, uint32_t dram_siz
         int pw   = s.cm ? unit : unit * 2;
         int npix = act_w / pw;
         s.vac = line_start;
+        if (top + y < SCC_OUT_MAX_H) out->line_addr[top + y] = line_start;
         render_line(&s, &m, row + left, npix, unit);
 
         uint32_t next = ls ? ((line_start + 512u) & VA_MASK) : s.vac;

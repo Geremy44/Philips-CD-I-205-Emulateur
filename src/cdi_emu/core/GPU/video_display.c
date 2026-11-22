@@ -18,12 +18,14 @@
 #include "vsd.h"
 #include "../FMV/fmv.h"
 #include "input_ui.h"
+#include "../options.h"
 #include "../input_map.h"
 #include "../CDIC/cdrom_win.h"
 #include <wchar.h>
 #include "../bus.h"
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
 #ifdef _WIN32
 #include <SDL2/SDL_syswm.h>
 #include <commdlg.h>
@@ -35,11 +37,15 @@
 
 /* The picture is drawn on a 4:3 logical surface; SDL letterboxes it in any
  * window size or in full screen, and converts mouse coordinates to it. */
-#define WIN_W   768
+static int log_w = 768;                /* 1024 in 16:9 */
+static int aspect_wide = 0;            /* menu Affichage / F2, options.ini */
+static int video_filter = 0;           /* menu Affichage / F4, options.ini */
+#define WIN_W   log_w
 #define WIN_H   576
 
 int g_video_window_closed = 0;
 static void create_menu(void);
+static void update_view_menu(void);
 
 static SDL_Window   *win = NULL;
 static SDL_Renderer *ren = NULL;
@@ -70,6 +76,10 @@ void video_display_init(void)
         return;
     }
 
+    aspect_wide = option_get("aspect", 0) ? 1 : 0;
+    log_w = aspect_wide ? 1024 : 768;
+    video_filter = option_get("filter", 0);
+    if (video_filter < 0 || video_filter >= VIDEO_FILTERS) video_filter = 0;
     win = SDL_CreateWindow("CD-i 205 - Video Output",
                            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                            WIN_W, WIN_H,
@@ -88,7 +98,7 @@ void video_display_init(void)
     }
 
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    SDL_RenderSetLogicalSize(ren, WIN_W, WIN_H);       /* 4:3, black borders */
+    SDL_RenderSetLogicalSize(ren, WIN_W, WIN_H);       /* 4:3 or 16:9, black borders */
 
     tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
                             SCC_OUT_MAX_W, SCC_OUT_MAX_H);
@@ -229,6 +239,14 @@ static void create_menu(void)
     AppendMenuW(view, MF_STRING, VM_FULLSCREEN, L"Plein \u00e9cran\tF11");
     AppendMenuW(view, MF_STRING, VM_HOST_CURSOR, L"Souris du PC visible\tF8");
     AppendMenuW(view, MF_STRING, VM_CONSOLE,   L"Console s\u00e9rie (UART)");
+    AppendMenuW(view, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(view, MF_STRING, VM_ASPECT_43,  L"Format 4:3\tF2");
+    AppendMenuW(view, MF_STRING, VM_ASPECT_169, L"Format 16:9 (\u00e9tir\u00e9)\tF2");
+    AppendMenuW(view, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 0, L"Filtre : aucun (net)\tF4");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 1, L"Filtre : liss\u00e9");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 2, L"Filtre : lignes de balayage");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 3, L"Filtre : \u00e9cran cathodique");
     AppendMenuW(ctl,  MF_STRING, VM_INPUT_CONFIG, L"Assigner les touches...");
     AppendMenuW(ctl,  MF_STRING, VM_MOUSE,     L"Souris active");
     AppendMenuW(ctl,  MF_SEPARATOR, 0, NULL);
@@ -240,7 +258,8 @@ static void create_menu(void)
     AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)hw,   L"Mat\u00e9riel");
     SetMenu(hwnd, menu_bar);
     SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
-    SDL_SetWindowSize(win, WIN_W, WIN_H);        /* keep the 4:3 client area */
+    SDL_SetWindowSize(win, WIN_W, WIN_H);        /* keep the 4:3 / 16:9 client area */
+    update_view_menu();
 #endif
 }
 
@@ -406,6 +425,176 @@ int video_display_choose_files(const char *title, char ***out)
     (void)title;
     return 0;
 #endif
+}
+
+/* ---- Picture format (4:3 / 16:9) and video filters ----
+ * 16:9 stretches the CD-i picture horizontally (logical surface 1024x576),
+ * for discs made for wide screens (The 7th Guest). Filters are done with
+ * the renderer (no shader support in SDL2's 2D API): smooth = bilinear
+ * scaling; scanlines = a dark band under each CD-i line; CRT = smooth +
+ * scanlines + RGB aperture mask + vignette. */
+static SDL_Texture *mask_tex = NULL, *vign_tex = NULL;
+
+static const char *const FILTER_NAMES[VIDEO_FILTERS] = {
+    "aucun", "liss\xC3\xA9", "lignes de balayage", "\xC3\xA9" "cran cathodique"
+};
+
+static void update_view_menu(void)
+{
+    video_display_menu_check(VM_ASPECT_43, !aspect_wide);
+    video_display_menu_check(VM_ASPECT_169, aspect_wide);
+    for (int i = 0; i < VIDEO_FILTERS; i++) video_display_menu_check(VM_FILTER0 + i, video_filter == i);
+}
+
+void video_display_set_aspect(int wide)
+{
+    aspect_wide = wide ? 1 : 0;
+    log_w = aspect_wide ? 1024 : 768;
+    option_set("aspect", aspect_wide);
+    if (win && !(SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP)) {
+        int w, h;
+        SDL_GetWindowSize(win, &w, &h);
+        SDL_SetWindowSize(win, h * log_w / WIN_H, h);   /* keep the height */
+    }
+    update_view_menu();
+    fprintf(stderr, "[video_display] format %s\n", aspect_wide ? "16:9" : "4:3");
+}
+int  video_display_aspect_wide(void) { return aspect_wide; }
+
+void video_display_set_filter(int f)
+{
+    video_filter = (f % VIDEO_FILTERS + VIDEO_FILTERS) % VIDEO_FILTERS;
+    option_set("filter", video_filter);
+    update_view_menu();
+    fprintf(stderr, "[video_display] video filter: %s\n", FILTER_NAMES[video_filter]);
+}
+int  video_display_filter(void) { return video_filter; }
+const char *video_display_filter_name(void) { return FILTER_NAMES[video_filter]; }
+
+static void make_filter_textures(void)
+{
+    if (!mask_tex) {        /* aperture mask: R, G, B columns, multiplied */
+        uint32_t px[3] = { 0xFFFFC8C8u, 0xFFC8FFC8u, 0xFFC8C8FFu };
+        mask_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, 3, 1);
+        if (mask_tex) {
+            SDL_UpdateTexture(mask_tex, NULL, px, sizeof(px));
+            SDL_SetTextureBlendMode(mask_tex, SDL_BLENDMODE_MOD);
+        }
+    }
+    if (!vign_tex) {        /* vignette: darker corners, multiplied, smoothed */
+        enum { VW = 64, VH = 48 };
+        static uint32_t px[VW * VH];
+        for (int y = 0; y < VH; y++)
+            for (int x = 0; x < VW; x++) {
+                float dx = (x + 0.5f) / VW - 0.5f, dy = (y + 0.5f) / VH - 0.5f;
+                float d = (dx * dx + dy * dy) * 4.0f;                /* 0 centre .. 2 corner */
+                int v = (int)(255.0f * (1.0f - 0.22f * d * d));
+                if (v < 0) v = 0;
+                px[y * VW + x] = 0xFF000000u | (uint32_t)v << 16 | (uint32_t)v << 8 | (uint32_t)v;
+            }
+        vign_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, VW, VH);
+        if (vign_tex) {
+            SDL_UpdateTexture(vign_tex, NULL, px, VW * 4);
+            SDL_SetTextureBlendMode(vign_tex, SDL_BLENDMODE_MOD);
+            SDL_SetTextureScaleMode(vign_tex, SDL_ScaleModeLinear);
+        }
+    }
+}
+
+/* after the picture is copied: lines (h = CD-i lines shown) and mask */
+static void apply_filter(int h)
+{
+    if (video_filter >= 2 && h > 0) {           /* scanlines: lower 40 % of each line */
+        SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(ren, 0, 0, 0, video_filter == 3 ? 110 : 90);
+        for (int y = 0; y < h; y++) {
+            int y0 = y * WIN_H / h, y1 = (y + 1) * WIN_H / h;
+            int band = (y1 - y0) * 2 / 5;
+            if (band < 1) band = 1;
+            SDL_Rect r = { 0, y1 - band, log_w, band };
+            SDL_RenderFillRect(ren, &r);
+        }
+    }
+    if (video_filter == 3) {
+        make_filter_textures();
+        if (mask_tex) {
+            for (int x = 0; x < log_w; x += 3) {            /* 1 logical pixel per column */
+                SDL_Rect r = { x, 0, 3, WIN_H };
+                SDL_RenderCopy(ren, mask_tex, NULL, &r);
+            }
+        }
+        if (vign_tex) SDL_RenderCopy(ren, vign_tex, NULL, NULL);
+    }
+}
+
+/* ---- F3 statistics overlay ---- */
+static int  stats_on = 0;
+static char stats_text[2048];
+static int  host_frames = 0;
+static double host_fps = 0;
+static Uint64 host_fps_t0 = 0;
+
+void video_display_toggle_stats(void)
+{
+    stats_on = !stats_on;
+    fprintf(stderr, "[video_display] statistics %s (F3)\n", stats_on ? "shown" : "hidden");
+}
+int  video_display_stats_on(void) { return stats_on; }
+void video_display_set_stats(const char *text)
+{
+    snprintf(stats_text, sizeof(stats_text), "%s", text ? text : "");
+}
+
+/* frames presented per real second */
+static void stats_count_frame(void)
+{
+    Uint64 now = SDL_GetPerformanceCounter(), f = SDL_GetPerformanceFrequency();
+    if (!host_fps_t0) host_fps_t0 = now;
+    host_frames++;
+    if (now - host_fps_t0 >= f) {
+        host_fps = host_frames * (double)f / (double)(now - host_fps_t0);
+        host_frames = 0;
+        host_fps_t0 = now;
+    }
+}
+
+static void stats_render(SDL_Renderer *r)
+{
+    if (!stats_on) return;
+    static TTF_Font *font = NULL;
+    static int tried = 0;
+    if (!tried) { tried = 1; font = input_ui_font(15); }
+    if (!font) return;
+    char all[2300];
+    snprintf(all, sizeof(all), "Affichage : %.1f images/s (image CD-i %dx%d)\n%s",
+             host_fps, frame_w, frame_h, stats_text);
+    /* one texture per line, on a translucent box (logical 768x576) */
+    SDL_Surface *lines[32];
+    int n = 0, wmax = 0, htot = 0;
+    SDL_Color fg = { 255, 255, 160, 255 };
+    for (char *p = all; *p && n < 32; ) {
+        char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        char line[300];
+        if (len >= sizeof(line)) len = sizeof(line) - 1;
+        memcpy(line, p, len); line[len] = 0;
+        lines[n] = TTF_RenderUTF8_Blended(font, *line ? line : " ", fg);
+        if (lines[n]) { if (lines[n]->w > wmax) wmax = lines[n]->w; htot += lines[n]->h; n++; }
+        if (!e) break;
+        p = e + 1;
+    }
+    SDL_Rect bg = { 6, 6, wmax + 12, htot + 10 };
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 170);
+    SDL_RenderFillRect(r, &bg);
+    int y = 11;
+    for (int i = 0; i < n; i++) {
+        SDL_Texture *t = SDL_CreateTextureFromSurface(r, lines[i]);
+        SDL_Rect d = { 12, y, lines[i]->w, lines[i]->h };
+        if (t) { SDL_RenderCopy(r, t, NULL, &d); SDL_DestroyTexture(t); }
+        y += lines[i]->h;
+        SDL_FreeSurface(lines[i]);
+    }
 }
 
 /* F11 / Alt+Enter: window <-> full screen (desktop resolution, 4:3 kept) */
@@ -724,11 +913,36 @@ int video_display_update(void *scc66470, void *bus)
             if (dyuv_b && y < hb) vsd_dyuv_line(&vsd, 1, src_b, wb < w ? wb : w, line_b);
             int ext = fmv_video_showing();
             vsd_ext_on = 0;
+            {   /* EMU_REGION_DUMP=n: at frame n, print the per-line region
+                 * registers, coding and transparency (tests) */
+                static int target = -2, nfr = 0;
+                if (target == -2) target = getenv("EMU_REGION_DUMP") ? atoi(getenv("EMU_REGION_DUMP")) : -1;
+                if (y == 0) nfr++;
+                if (target > 0 && nfr == target && y < 60)
+                    fprintf(stderr, "[LINE] y%3d A %05X B %05X\n", y,
+                            (unsigned)frame->line_addr[y], (unsigned)frame_b->line_addr[y]);
+                if (target > 0 && nfr == target) {
+                    static uint32_t prev[16];
+                    uint32_t cur[16];
+                    memcpy(cur, vsd.region, sizeof(vsd.region));
+                    cur[8] = vsd.icm; cur[9] = vsd.tcr; cur[10] = vsd.plane_order; cur[11] = vsd.transp_a;
+                    cur[12] = vsd.transp_b; cur[13] = vsd.weight_a; cur[14] = vsd.weight_b; cur[15] = vsd.mask_a;
+                    if (y == 0 || memcmp(cur, prev, sizeof(cur))) {
+                        fprintf(stderr, "[REG] y%3d icm %06X tcr %06X ord %X tA %06X tB %06X wA %X wB %X mA %06X R:", y, (unsigned)vsd.icm, (unsigned)vsd.tcr, (unsigned)vsd.plane_order, (unsigned)vsd.transp_a, (unsigned)vsd.transp_b, (unsigned)vsd.weight_a, (unsigned)vsd.weight_b, (unsigned)vsd.mask_a);
+                        for (int k = 0; k < 8; k++) fprintf(stderr, " %06X", (unsigned)vsd.region[k]);
+                        fprintf(stderr, "\n");
+                        memcpy(prev, cur, sizeof(cur));
+                    }
+                }
+            }
             for (int x = 0; x < w; x++) {
                 if (ext) vsd_ext_on = fmv_video_pixel(x * 384 / w, y, &vsd_ext_rgb);
                 vsd_region_flags(&vsd, x * 768 / w, vsd_rflag);
                 int b_on = frame_b->enabled && x < wb && y < hb;
-                dst[x] = vsd_mix_rgb(&vsd, src_a[x], frame->enabled, dyuv_a ? &line_a[x] : NULL,
+                static int hide = -1;        /* EMU_HIDE_PLANE=A or B (tests) */
+                if (hide < 0) hide = getenv("EMU_HIDE_PLANE") ? *getenv("EMU_HIDE_PLANE") : 0;
+                if (hide == 'B') b_on = 0;
+                dst[x] = vsd_mix_rgb(&vsd, src_a[x], frame->enabled && hide != 'A', dyuv_a ? &line_a[x] : NULL,
                                      b_on ? src_b[x] : 0, b_on, (dyuv_b && b_on) ? &line_b[x] : NULL);
             }
         }
@@ -743,8 +957,35 @@ int video_display_update(void *scc66470, void *bus)
     SDL_UpdateTexture(tex, NULL, pixels, SCC_OUT_MAX_W * (int)sizeof(uint32_t));
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
-    SDL_RenderCopy(ren, tex, &src_rect, NULL);    /* stretched to the 4:3 surface */
+    {   /* format: the assignment panel is laid out for 4:3 */
+        static int cur_w = 0;
+        int want = input_ui_is_open() ? 768 : log_w;
+        if (want != cur_w) { cur_w = want; SDL_RenderSetLogicalSize(ren, want, WIN_H); }
+    }
+    SDL_SetTextureScaleMode(tex, video_filter == 0 || video_filter == 2 ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+    SDL_RenderCopy(ren, tex, &src_rect, NULL);    /* stretched to the 4:3 / 16:9 surface */
+    apply_filter(h);
     input_ui_render(ren);                         /* assignment panel, if open */
+    stats_count_frame();
+    stats_render(ren);                            /* F3 statistics */
+    {   /* EMU_STATS_SHOT=file.bmp,frame: F3 on from the start, window saved at
+         * that frame (tests) */
+        static int init = 0, at = -1, nf = 0;
+        static char path[600];
+        if (!init) {
+            init = 1;
+            const char *e = getenv("EMU_STATS_SHOT");
+            if (e && sscanf(e, "%590[^,],%d", path, &at) == 2) stats_on = 1;
+        }
+        if (at >= 0 && ++nf == at) {
+            int ow, oh;
+            SDL_GetRendererOutputSize(ren, &ow, &oh);
+            SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
+            if (s && SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_ARGB8888, s->pixels, s->pitch) == 0)
+                SDL_SaveBMP(s, path);
+            if (s) SDL_FreeSurface(s);
+        }
+    }
     {   /* EMU_UI_SHOT=file.bmp: open the panel and save the window (tests) */
         static int shot = 0;
         const char *p = getenv("EMU_UI_SHOT");

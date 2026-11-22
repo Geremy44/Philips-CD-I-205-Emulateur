@@ -38,6 +38,9 @@
 
 #define ROM_DIR "./ROM"
 
+static m68k_t *g_cpu_dbg = NULL;      /* for debug logs elsewhere */
+int m68k_current_sr(void) { return g_cpu_dbg ? g_cpu_dbg->sr : 0; }
+
 /* Fichier > Importer des ROM: choose dumps, merge / check them, write ROM/.
  * Returns the ROM_IMPORTED_* mask. */
 static int import_roms_dialog(void)
@@ -82,6 +85,15 @@ static int hotkey(int fkey)
     switch (fkey) {
     case 11:
         video_display_toggle_fullscreen();
+        return 1;
+    case 3:
+        video_display_toggle_stats();
+        return 1;
+    case 2:                                   /* picture format 4:3 <-> 16:9 */
+        video_display_set_aspect(!video_display_aspect_wide());
+        return 1;
+    case 4:                                   /* next video filter */
+        video_display_set_filter(video_display_filter() + 1);
         return 1;
     case 8:
         video_display_toggle_host_cursor();
@@ -269,6 +281,11 @@ static void menu_action(int id)
     case VM_LOAD:        hotkey(9); break;
     case VM_NEXT_SLOT:   hotkey(6); break;
     case VM_FULLSCREEN:  video_display_toggle_fullscreen(); break;
+    case VM_ASPECT_43:   video_display_set_aspect(0); break;
+    case VM_ASPECT_169:  video_display_set_aspect(1); break;
+    case VM_FILTER0 + 0: case VM_FILTER0 + 1: case VM_FILTER0 + 2: case VM_FILTER0 + 3:
+        video_display_set_filter(id - VM_FILTER0);
+        break;
     case VM_HOST_CURSOR: video_display_toggle_host_cursor(); break;
     case VM_CONSOLE:     uart_console_set_visible(!uart_console_is_visible()); break;
     case VM_SWAP:        hotkey(7); break;
@@ -437,6 +454,7 @@ int main(int argc, char* argv[]) {
 
    /* --- Initialize the M68000 CPU --- */
     m68k_t cpu;
+    g_cpu_dbg = &cpu;
     m68k_init(&cpu);
     m68k_set_bus(&cpu, bus);
 
@@ -561,6 +579,10 @@ int main(int argc, char* argv[]) {
     int pace_log = getenv("EMU_PACE_LOG") != NULL;
     long pace_hist[8] = {0};
     uint64_t pace_last = 0;
+    /* F3 statistics */
+    uint64_t st_t0 = 0, st_cyc0 = 0, st_wait = 0;
+    long long st_ins0 = 0;
+    int st_frames = 0;
     int os9_log = getenv("EMU_OS9_LOG") && *getenv("EMU_OS9_LOG") && *getenv("EMU_OS9_LOG") != '0';
     int ring_pos = 0;
 
@@ -588,7 +610,7 @@ int main(int argc, char* argv[]) {
         if (brk) {
             int hit = -1;
             for (int k = 0; k < nbrk; k++)
-                if (cpu.pc == brks[k] && brk_hits[k] < 16) { hit = k; brk_hits[k]++; }
+                if (cpu.pc == brks[k] && i >= watch_after && brk_hits[k] < (getenv("EMU_BREAK_MAX") ? atoi(getenv("EMU_BREAK_MAX")) : 16)) { hit = k; brk_hits[k]++; }
             if (hit >= 0) {
                 fprintf(stderr, "[BREAK] PC=%06X reached at step %lld, last PCs:\n", brks[hit], i);
                 for (int k = 0; k < 64; k++)
@@ -629,6 +651,7 @@ int main(int argc, char* argv[]) {
 
         g_step = i;
         bus_watch_pc = cpu.pc;
+        { extern long long bus_watch_step; bus_watch_step = i; }
         bus_watch_on = (i >= watch_after);
         while (g_play && i == g_play_step) {
             if (g_play_menu) { int id = g_play_x; play_next(); menu_action(id); }
@@ -770,6 +793,51 @@ int main(int argc, char* argv[]) {
                 }
                 pace_last = now;
             }
+            /* F3 statistics, measured over one real second */
+            st_frames++;
+            if (video_display_stats_on()) {
+                uint64_t now = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency();
+                if (!st_t0) { st_t0 = now; st_cyc0 = rtc_virtual_cycles; st_ins0 = i; st_frames = 0; st_wait = 0; }
+                else if (now - st_t0 >= freq) {
+                    double sec = (double)(now - st_t0) / (double)freq;
+                    double mhz = (double)(rtc_virtual_cycles - st_cyc0) / sec / 1e6;
+                    double mips = (double)(i - st_ins0) / sec / 1e6;
+                    double busy = 100.0 * (1.0 - (double)st_wait / (double)(now - st_t0));
+                    int q0, q1; unsigned long u0, u1, d0, d1;
+                    audio_out_stats(AUDIO_SRC_CDIC, &q0, &u0, &d0);
+                    audio_out_stats(AUDIO_SRC_FMV, &q1, &u1, &d1);
+                    char fmvl[200], audl[320], txt[1600];
+                    fmv_status_text(fmvl, sizeof(fmvl));
+                    if (q0 < 0) snprintf(audl, sizeof(audl), "Son : coup\xC3\xA9 (pas de sortie audio)");
+                    else snprintf(audl, sizeof(audl), "Son en file : CD-i %d ms, cartouche %d ms (coupures %lu / %lu, jet\xC3\xA9s %lu / %lu)",
+                                  q0, q1, u0, u1, d0, d1);
+                    {   /* attenuators (left->left / right->right) */
+                        uint8_t a0[4], a1[4];
+                        char v0[24], v1[24];
+                        audio_out_get_atten(AUDIO_SRC_CDIC, a0);
+                        audio_out_get_atten(AUDIO_SRC_FMV, a1);
+                        #define ATT_TXT(b, a) do { if ((a[0] & 0x80) && (a[2] & 0x80)) snprintf(b, sizeof(b), "coup\xC3\xA9"); \
+                            else snprintf(b, sizeof(b), "-%d / -%d dB", a[0] & 0x7F, a[2] & 0x7F); } while (0)
+                        ATT_TXT(v0, a0); ATT_TXT(v1, a1);
+                        #undef ATT_TXT
+                        size_t len = strlen(audl);
+                        snprintf(audl + len, sizeof(audl) - len, "\nVolumes (G / D) : CD-i %s, cartouche %s", v0, v1);
+                    }
+                    snprintf(txt, sizeof(txt),
+                             "Processeur 68070 : %.2f MHz mesur\xC3\xA9s (%.0f %% de 15 MHz), %.2f MIPS\n"
+                             "Images CD-i \xC3\xA9mul\xC3\xA9" "es : %.1f /s (vitesse demand\xC3\xA9" "e %d %%)\n"
+                             "Charge de l'\xC3\xA9mulation : %.0f %% du temps r\xC3\xA9" "el (le reste : attente)\n"
+                             "%s\n%s\n"
+                             "Format %s (F2), filtre : %s (F4)\n"
+                             "Sauvegarde : emplacement %d (F5 / F9, F6 suivant)  |  F3 : masquer",
+                             mhz, mhz / 15.0 * 100.0, mips, st_frames / sec, speed,
+                             busy < 0 ? 0 : busy, audl, fmvl,
+                             video_display_aspect_wide() ? "16:9" : "4:3", video_display_filter_name(),
+                             g_save_slot);
+                    video_display_set_stats(txt);
+                    st_t0 = now; st_cyc0 = rtc_virtual_cycles; st_ins0 = i; st_frames = 0; st_wait = 0;
+                }
+            } else st_t0 = 0;
             if (running)
                 running = video_display_update(video, bus);
             if (speed > 0) {
@@ -780,8 +848,10 @@ int main(int argc, char* argv[]) {
                 if (emu_t > host_t) {
                     uint64_t wait = emu_t - host_t;
                     uint64_t ms = wait * 1000u / freq;
+                    uint64_t w0 = SDL_GetPerformanceCounter();
                     if (ms > 1) SDL_Delay((Uint32)(ms - 1));          /* coarse sleep */
                     while (SDL_GetPerformanceCounter() - pace_t0 < emu_t) { }   /* fine wait (<1 ms) */
+                    st_wait += SDL_GetPerformanceCounter() - w0;
                 } else if (host_t - emu_t > freq / 4) {               /* >250 ms late: resync */
                     pace_cycles0 = rtc_virtual_cycles;
                     pace_t0 = SDL_GetPerformanceCounter();

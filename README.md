@@ -130,14 +130,14 @@ Détails : `docs/fmv/FMV_EMULATION_NOTES.md`.
 | *Astérix : Le Défi de César* | 🟡 Lancement OK, pas testé complètement | Intro, dessins animés, menus, plateaux, voix, musique, bruitages ; une partie de 30 min sans souci, jouée depuis le vrai CD (lecteur du PC) ; partie complète pas encore vérifiée |
 | *Inca* | 🟡 Lancement OK, pas testé complètement | Image, son et curseur ; demandait l'INTERRUPT des DCA et les facteurs DB/DC changés en cours d'image |
 | *CDI Pinball Volume 1* | 🟡 Lancement OK, pas testé complètement | Les deux flippers répondent (boutons 1 / 2) ; un peu de latence des commandes dans l'émulateur |
-| *The 7th Guest* (disque 1) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : introduction et cinématiques MPEG avec image et son, jusqu'à l'escalier ; quelques artefacts d'image par moments |
+| *The 7th Guest* (disque 1) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : introduction, cinématiques MPEG, casse-tête du gâteau et sauvegarde |
 | *The 7th Guest* (disque 2, CD audio) | ✅ Fonctionne | Lecteur de CD audio du shell : 7 pistes, lecture, pause, choix de piste, temps écoulé |
 | *CD Shoot* | 🟡 Lancement OK, pas testé complètement | Jouable ; la souris reste capturée dans la fenêtre pendant la visée |
 | *Secret Mission* | 🟡 Lancement OK, pas testé complètement | Jeu et cinématiques avec image et son (le CDIC garde ses filtres pendant une mise à jour `$2E`) |
 | *Kether* | 🟡 Lancement OK, pas testé complètement | Semble bien fonctionner (image, son, sons en mémoire) |
 | *Harvest of the Sun* (visite interactive sur Van Gogh) | 🟡 Lancement OK, pas testé complètement | Images propres, fondus et son OK |
 | *L'Open de Palm Springs* | 🟡 Lancement OK, pas testé complètement | Fonctionne bien |
-| *Journal interactif 94* (TF1, disque 2) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : vidéo et son MPEG, menu des rédacteurs avec ses photos ; quelques artefacts d'image ; sans elle, « Votre carte numérique n'est pas installée », comme un vrai 205 |
+| *Journal interactif 94* (TF1, disque 2) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : vidéo et son MPEG, menu des rédacteurs avec ses photos ; sans elle, « Votre carte numérique n'est pas installée », comme un vrai 205 |
 
 ### Charger un disque
 
@@ -190,6 +190,9 @@ la fermer quitte l'émulateur. La console série est masquée par défaut
 | Ouvrir un disque (image) | menu **Fichier > Ouvrir un disque…** ou **Ctrl+O**, ou le bouton OPEN du CD-i |
 | Plein écran 4:3 (bandes noires) / fenêtre | **F11** ou **Alt+Entrée** |
 | Afficher / masquer la souris du PC sur l'image | **F8** |
+| Statistiques : images/s, fréquence du 68070 mesurée, charge, son, MPEG | **F3** |
+| Format d'image 4:3 / 16:9 (étiré, pour les disques en 16:9 comme *The 7th Guest*) | **F2** ou menu **Affichage** |
+| Filtre vidéo suivant : aucun, lissé, lignes de balayage, écran cathodique | **F4** ou menu **Affichage** |
 | Inverser clic gauche / droit | **F7** |
 | Sauvegarder NVRAM + horloge dans le slot courant | **F5** |
 | Rappeler le slot courant | **F9** |
@@ -201,6 +204,18 @@ la fermer quitte l'émulateur. La console série est masquée par défaut
 SDL2 et dépendances UCRT64, `ROM/`, `lancer.bat` (glisser un `.cue` dessus)
 et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
 à renvoyer pour un rejeu identique d'un bug).
+
+### Format d'image et filtres vidéo
+
+- **Format** (menu **Affichage** ou **F2**) : 4:3, ou 16:9 qui étire l'image
+  en largeur pour les disques prévus pour un écran large (*The 7th Guest*).
+- **Filtre** (menu **Affichage** ou **F4**) : aucun (pixels nets), lissé
+  (interpolation bilinéaire), lignes de balayage (une bande sombre sous
+  chaque ligne du CD-i), écran cathodique (lissé + lignes + masque RVB +
+  coins assombris).
+- Les deux choix sont mémorisés dans `options.ini`, à côté de l'exécutable.
+- Les filtres sont faits par le moteur de rendu SDL2 (mélanges calculés par
+  la carte graphique) : SDL2 n'accepte pas de vrais shaders.
 
 ### Sauvegardes de jeu et horloge
 
@@ -233,6 +248,10 @@ et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
 | `EMU_PLANE_LOG=1` | toutes les 50 trames : pixels les plus fréquents de chaque plan et registres de mixage |
 | `EMU_SPEED=100` | vitesse en % du vrai CD-i (`0` = sans limite) |
 | `EMU_AUDIO=0` / `EMU_AUDIO_DUMP=son.wav` | coupe le son / enregistre le son en WAV |
+| `EMU_AUDIO_LOG=1` | statistiques de la sortie son par source (CDIC, cartouche FMV) : envoyé, jeté, sous-alimentations |
+| `EMU_FMV_PICS=dossier,début,fin` | enregistre en BMP les images MPEG affichées entre ces deux instants (secondes, 300 au plus) |
+| `EMU_FMV_ES_DUMP=f.m1v` | enregistre le flux vidéo MPEG reçu par la cartouche |
+| `EMU_STATS_SHOT=f.bmp,n` | affiche F3 dès le départ et enregistre la fenêtre à la n-ième image (tests) |
 | `EMU_WATCH=E5100-E5200`, `EMU_WATCH_AFTER=n` | signale les écritures dans cette plage (et si c'est le DMA) |
 | `EMU_DMA_LOG=1` | journalise chaque transfert DMA CDIC ↔ mémoire |
 | `EMU_INPUT_REC=f.rec` / `EMU_INPUT_PLAY=f.rec` | enregistre / rejoue souris, clics, disque choisi (OPEN) et commandes Ouvrir / Éjecter au pas près (tests reproductibles) |
@@ -266,6 +285,7 @@ src/cdi_emu/
     ├── bus.c/h               ← carte mémoire et routage MMIO
     ├── rom_loader.c/h        ← chargeur Intel HEX
     ├── rom_import.c/h        ← import / fusion des dumps de ROM (console, EPROM FMV)
+    ├── options.c/h           ← choix mémorisés dans options.ini (cartouche, format, filtre)
     ├── rtc_m48t08.c/h        ← horloge M48T08 (RTC) de la NVRAM
     ├── CPU/
     │   ├── m68k*.c/h         ← CPU 68070 (décodage, modes d'adressage, exceptions)

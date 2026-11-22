@@ -19,6 +19,7 @@
 #define FMV_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /* Load the cartridge ROM (does not insert it). Returns 0 if found. */
 int  fmv_init(const char *rom_path);
@@ -48,6 +49,9 @@ void fmv_tick(int cycles);
 void fmv_frame(void);
 /* the 68070 DMA channel 2 has been started (bus.c) */
 void fmv_dma_started(void);
+
+/* One line of status for the F3 overlay (French) */
+void fmv_status_text(char *out, size_t n);
 /* interrupt request: level (4) or 0, and the vector */
 int  fmv_irq(int *vector);
 /* MPEG picture: chip pixel coordinates (384 across the active line) */

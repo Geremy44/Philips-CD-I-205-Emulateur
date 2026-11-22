@@ -93,6 +93,8 @@ static plm_video_t  *dec;
 static pinfo_t  info_q[INFO_Q];                  /* pictures in coded order, from the input */
 static int      info_n;
 static int      complete_pics;                   /* pictures whose end has arrived */
+static int      close_wait;     /* bytes still awaited after the start code that ends a picture */
+static int      flush_input;    /* no next picture will come (sequence / program end): decode what is in */
 static int      pictures_in_input;
 static int      needs_data;
 static pinfo_t  held_info;
@@ -100,6 +102,7 @@ static int      reference_held;
 /* scanner of the elementary stream as it arrives */
 static uint32_t sc_shift;
 static int      sc_kind, sc_pos, seq_seen, pic_open, pend_gop, pend_seq;
+#define SC_PICTURE 0x100   /* sc_kind for a picture header (0 = no header being read) */
 static uint8_t  sc_buf[4];
 static uint32_t cur_timecode;
 static uint8_t  cur_rate = 3;
@@ -122,6 +125,9 @@ static uint32_t fmv_dclk(void) { return raw_dclk() + (uint32_t)dclk_offset; }
 
 static void free_pic(picture_t *p) { free(p->rgb); p->rgb = NULL; }
 
+unsigned long fmvv_shown;                         /* pictures displayed (F3 overlay) */
+void fmvv_info(int *w, int *h, int *playing) { *w = dec_w; *h = dec_h; *playing = playback_active && show_video; }
+
 static void decoder_new(void)
 {
     if (dec) plm_video_destroy(dec);         /* also frees its buffer */
@@ -130,6 +136,8 @@ static void decoder_new(void)
     info_n = complete_pics = 0;
     reference_held = 0;
     sc_shift = 0; sc_kind = 0; seq_seen = pic_open = pend_gop = pend_seq = 0;
+    close_wait = 0;
+    flush_input = 0;
 }
 
 static void clear_fifo(void)
@@ -229,6 +237,11 @@ static int decode_one(void)
         v->start_code = plm_buffer_find_start_code(v->buffer, PLM_START_PICTURE);
         if (v->start_code == -1) { complete_pics = 0; return 0; }
     }
+    /* As pl_mpeg does: the whole picture is in only once the start code of
+     * the next one has arrived (or the program has ended). Decoding earlier
+     * reads a truncated picture, and every picture predicted from it is
+     * wrong until the next I picture (blocky artefacts). */
+    if (!flush_input && plm_buffer_has_start_code(v->buffer, PLM_START_PICTURE) == -1) return 0;
     plm_buffer_discard_read_bytes(v->buffer);
     v->picture_type = 0;
     plm_video_decode_picture(v);
@@ -271,9 +284,13 @@ static void decode_pending(void)
  * the headers the status registers report */
 static void scan_es(uint8_t b)
 {
+    /* pl_mpeg recognises the start code that ends a picture only once a few
+     * more bytes follow it: decoding earlier loses the end of the picture
+     * and the next one (broken references: blocky artefacts) */
+    if (close_wait && --close_wait == 0) complete_pics++;
     if (sc_kind) {
         sc_buf[sc_pos++] = b;
-        int need = sc_kind == 0x00 ? 2 : 4;
+        int need = sc_kind == SC_PICTURE ? 2 : 4;
         if (sc_pos < need) return;
         if (sc_kind == 0xB3) { cur_rate = sc_buf[3] & 15; }
         else if (sc_kind == 0xB8) {
@@ -281,7 +298,7 @@ static void scan_es(uint8_t b)
             uint32_t g = v >> 7;                 /* 25-bit time code */
             uint32_t fr = g & 0x3f, s = (g >> 6) & 0x3f, m = (g >> 13) & 0x3f, h = (g >> 19) & 0x1f;
             cur_timecode = (h << 6) | m | (s << 22) | (fr << 16);
-        } else if (sc_kind == 0x00 && info_n < INFO_Q) {
+        } else if (sc_kind == SC_PICTURE && info_n < INFO_Q) {
             pinfo_t *p = &info_q[info_n++];
             memset(p, 0, sizeof(*p));
             int tref = (sc_buf[0] << 2) | (sc_buf[1] >> 6), type = (sc_buf[1] >> 3) & 7;
@@ -300,15 +317,21 @@ static void scan_es(uint8_t b)
     if (code == 0xB3) { seq_seen = 1; pend_seq = pend_gop = 1; }
     if (code == 0xB8) pend_gop = 1;
     if (!seq_seen) return;
-    if (pic_open) { complete_pics++; pic_open = 0; }
+    if (pic_open) {
+        if (close_wait) complete_pics++;         /* the previous one is safe now */
+        close_wait = 8;
+        pic_open = 0;
+    }
     if (code == 0x00) {
         pic_open = 1;
+        flush_input = 0;
         pictures_in_input++;
         if (dts_n < INFO_Q) dts_q[dts_n++] = next_dts;
         next_dts = 0;
-        sc_kind = 0x00; sc_pos = 0;
+        sc_kind = SC_PICTURE; sc_pos = 0;
     } else if (code == 0xB3 || code == 0xB8) { sc_kind = code; sc_pos = 0; }
     else if (code == 0xB7) {
+        flush_input = 1;
         if (info_n) info_q[info_n - 1].ends_seq = 1;
         else sequence_end();
     }
@@ -322,11 +345,18 @@ void fmvv_data(uint8_t b)
     if (body) {
         uint8_t c = b;
         if (plm_buffer_get_remaining(es) < 2 * 1024 * 1024) plm_buffer_write(es, &c, 1);
+        {   /* EMU_FMV_ES_DUMP=file: the video elementary stream received (tests) */
+            static FILE *f = NULL; static int tried = 0;
+            if (!tried) { tried = 1; if (getenv("EMU_FMV_ES_DUMP")) f = fopen(getenv("EMU_FMV_ES_DUMP"), "wb"); }
+            if (f) fputc(c, f);
+        }
         scan_es(b);
     }
     if (demux.dts_updated) { next_dts = demux.dts; vdi_cmd |= 1 << 14; }
     if (demux.program_end) {
         /* end of the program: the reference held for reordering is shown too */
+        if (close_wait) { complete_pics++; close_wait = 0; }
+        flush_input = 1;
         if (pic_open) { complete_pics++; pic_open = 0; }
         decode_pending();
         release_held();
@@ -376,8 +406,44 @@ static void latch_display(void)
     memmove(fifo, fifo + 1, (size_t)--fifo_n * sizeof(picture_t));
     fifo[fifo_n].rgb = NULL;
     display_valid = 1;
+    fmvv_shown++;
     if (dts_n) memmove(dts_q, dts_q + 1, (size_t)--dts_n * sizeof(int64_t));
     display_info = display.info;
+    {   /* EMU_FMV_PICS=dir,from,to (seconds): save the pictures shown in that
+         * window as BMP (tests; at most 300 files) */
+        static int init = 0, saved = 0;
+        static char dir[512];
+        static double t0, t1;
+        if (!init) {
+            init = 1;
+            const char *e = getenv("EMU_FMV_PICS");
+            dir[0] = 0;
+            if (e && sscanf(e, "%500[^,],%lf,%lf", dir, &t0, &t1) != 3) dir[0] = 0;
+            if (e) fprintf(stderr, "[FMV] saving pictures to '%s' from %.1f to %.1f s\n", dir, t0, t1);
+        }
+        double t = (double)fmv_now / FMV_CPU_HZ;
+        if (dir[0] && t >= t0 && t <= t1 && saved < 300 && display.rgb) {
+            char name[600];
+            int w = display.info.width, h = display.info.height;
+            snprintf(name, sizeof(name), "%s/p%04d_%07.3f_%c%02d.bmp", dir, saved++, t,
+                     "XIPB"[(display.info.video_status >> 6) & 3], display.info.video_status & 0x3f);
+            FILE *f = fopen(name, "wb");
+            if (!f) fprintf(stderr, "[FMV] cannot write %s\n", name);
+            if (f) {
+                uint8_t hd[54] = { 'B', 'M' };
+                uint32_t sz = 54u + (uint32_t)w * h * 4u;
+                hd[2] = sz; hd[3] = sz >> 8; hd[4] = sz >> 16; hd[5] = sz >> 24;
+                hd[10] = 54; hd[14] = 40;
+                hd[18] = w; hd[19] = w >> 8;
+                uint32_t nh = (uint32_t)-h;
+                hd[22] = nh; hd[23] = nh >> 8; hd[24] = nh >> 16; hd[25] = nh >> 24;
+                hd[26] = 1; hd[28] = 32;
+                fwrite(hd, 1, 54, f);
+                fwrite(display.rgb, 4, (size_t)w * h, f);
+                fclose(f);
+            }
+        }
+    }
 }
 
 static void apply_register_update(void)

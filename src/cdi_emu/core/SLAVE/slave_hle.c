@@ -63,6 +63,7 @@
 
 #include "slave.h"
 #include "slave_backend.h"
+#include "../audio_out.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,6 +96,8 @@ typedef struct {
     int     reset_req;          /* $8A on channel 2: reset the 68070 */
     int     tray_open;          /* drive door open ($89 from the shell) */
     int     tray_event;         /* 1 = just opened, 2 = just closed (host) */
+    uint8_t atten[5];           /* $Cx + 4 attenuations on channel 2 */
+    int     atten_n;
 
     uart_inject_fn inject;
     void          *bus;
@@ -127,6 +130,8 @@ static void hle_reset(void *ctx)
     c->inject = inj;
     c->bus    = bus;
     c->disc   = disc;                /* the disc stays in the drive */
+    {   static const uint8_t stereo[4] = { 0, 0x80, 0, 0x80 };   /* full stereo until CD-RTOS sets it */
+        audio_out_set_atten(AUDIO_SRC_CDIC, stereo); }
     const char *s = getenv("EMU_SLAVE_LOG");
     c->log = (s && *s && strcmp(s, "0") != 0);
     c->px = 384; c->py = 240;
@@ -200,6 +205,22 @@ static void hle_write8(void *ctx, uint32_t addr, uint8_t val)
         }
     } else if (ch == 3)
         command(c, val);
+    else if (ch == 2 && c->atten_n > 0) {   /* attenuation bytes */
+        c->atten[c->atten_n++] = val;
+        if (c->atten_n == 5) {
+            /* $Cx: bits 1, 0, 3, 2 switch off left->left, left->right,
+             * right->right, right->left (CDi_MiSTer measurements: $C5 =
+             * plain stereo, $CA = swapped); the 4 bytes are the attenuations
+             * in dB, in that order */
+            static const uint8_t off_bit[4] = { 2, 1, 8, 4 };
+            uint8_t a[4];
+            for (int k = 0; k < 4; k++)
+                a[k] = (uint8_t)((c->atten[1 + k] & 0x7F) | ((c->atten[0] & off_bit[k]) ? 0x80 : 0));
+            audio_out_set_atten(AUDIO_SRC_CDIC, a);
+            c->atten_n = 0;
+        }
+    }
+    else if (ch == 2 && (val & 0xF0) == 0xC0) { c->atten[0] = val; c->atten_n = 1; }
     else if (ch == 2 && val == 0x8A)
         c->reset_req = 1;            /* kernel "Fatal System Error; rebooting" */
     else if (ch == 2 && val == 0x89) {   /* shell OPEN: open the drive door */

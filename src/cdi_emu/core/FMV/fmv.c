@@ -15,6 +15,7 @@
 #include "fmv.h"
 #include "fmv_internal.h"
 #include <stdio.h>
+#include "../options.h"
 #include <stdlib.h>
 #include <string.h>
 #include <SDL2/SDL.h>
@@ -73,35 +74,8 @@ void fmv_set_enabled(int enable)
     fprintf(stderr, "[FMV] cartridge %s\n", on ? "inserted" : "removed");
 }
 
-static void option_path(char *out, int n)
-{
-    char *base = SDL_GetBasePath();
-    snprintf(out, n, "%soptions.ini", base ? base : "");
-    SDL_free(base);
-}
-
-int fmv_option_load(void)
-{
-    char p[1100], line[128];
-    option_path(p, sizeof(p));
-    FILE *f = fopen(p, "r");
-    if (!f) return -1;
-    int v = -1;
-    while (fgets(line, sizeof(line), f))
-        if (!strncmp(line, "fmv=", 4)) v = atoi(line + 4) != 0;
-    fclose(f);
-    return v;
-}
-
-void fmv_option_save(int enable)
-{
-    char p[1100];
-    option_path(p, sizeof(p));
-    FILE *f = fopen(p, "w");
-    if (!f) return;
-    fprintf(f, "; CD-i 205 - options (menu Materiel)\nfmv=%d\n", enable ? 1 : 0);
-    fclose(f);
-}
+int fmv_option_load(void) { return option_get("fmv", -1); }
+void fmv_option_save(int enable) { option_set("fmv", enable ? 1 : 0); }
 
 int fmv_handles(uint32_t addr)
 {
@@ -146,7 +120,7 @@ static void to_chip(uint16_t w)
 static void run_dma(void)
 {
     if (drq_pending < 0) return;
-    if (drq_pending == 1 && !fmva_wants_data()) return;   /* audio FIFO full: wait */
+    if (drq_pending == 1 && getenv("EMU_FMA_HOLD") && !fmva_wants_data()) return;   /* (test) hold while full */
     xfer_audio = drq_pending;
     int n = bus_dma2_transfer(to_chip);
     if (n < 0) return;                             /* channel not started yet */
@@ -177,7 +151,16 @@ void fmv_tick(int cycles)
     if (fmv_now >= vblank_end_at) { vblank_end_at = FMV_NEVER; fmvv_vblank(0); }
     fmvv_tick();
     fmva_tick();
-    if (drq_pending == 1) run_dma();               /* audio FIFO has room again? */
+    if (drq_pending == 1) {                        /* audio FIFO has room again? */
+        static uint64_t next_log = 0;
+        extern uint32_t bus_watch_pc;
+        extern int m68k_current_sr(void);
+        if (fmv_log >= 2 && fmv_now >= next_log) {
+            next_log = fmv_now + FMV_CPU_HZ / 200;
+            fprintf(stderr, "[FMV] audio DMA held: pc=%06X sr=%04X\n", bus_watch_pc, m68k_current_sr());
+        }
+        run_dma();
+    }
 }
 
 void fmv_frame(void)
@@ -270,4 +253,26 @@ void fmv_write8(uint32_t addr, uint8_t v)
         wr_hi_addr = 1;
         fmv_reg_write16(addr & ~1u, (uint16_t)(hi << 8 | v));
     }
+}
+
+void fmv_status_text(char *out, size_t n)
+{
+    if (!rom) { snprintf(out, n, "Cartouche FMV : ROM absente"); return; }
+    if (!on)  { snprintf(out, n, "Cartouche FMV : retir\xC3\xA9" "e"); return; }
+    static unsigned long last_shown = 0;
+    static uint64_t last_t = 0;
+    static double fps = 0;
+    if (fmv_now - last_t >= FMV_CPU_HZ) {               /* pictures per emulated second */
+        fps = (double)(fmvv_shown - last_shown) * FMV_CPU_HZ / (double)(fmv_now - last_t);
+        last_shown = fmvv_shown; last_t = fmv_now;
+    }
+    int w, h, vplay, kbps, rate, aplay;
+    fmvv_info(&w, &h, &vplay);
+    fmva_info(&kbps, &rate, &aplay);
+    char vid[64], aud[64];
+    if (vplay && w) snprintf(vid, sizeof(vid), "%dx%d, %.1f img/s", w, h, fps);
+    else            snprintf(vid, sizeof(vid), "arr\xC3\xAAt\xC3\xA9" "e");
+    if (aplay && kbps) snprintf(aud, sizeof(aud), "%d kbit/s, %.1f kHz", kbps, rate / 1000.0);
+    else               snprintf(aud, sizeof(aud), "arr\xC3\xAAt\xC3\xA9");
+    snprintf(out, n, "MPEG : vid\xC3\xA9o %s | son %s", vid, aud);
 }

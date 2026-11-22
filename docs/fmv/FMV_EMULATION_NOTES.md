@@ -112,11 +112,18 @@ référence retenue est maintenant affichée (c'est la suivante dans l'ordre).
 Reproduit et vérifié par rejeu de la partie enregistrée (`partie.rec`).
 
 Journal interactif (22/11/2026, rejeu d'une partie enregistrée) :
-- Son haché : après le menu, le pilote envoyait l'audio environ 3 fois plus
-  vite que la lecture ; la file pleine jetait le surplus. La puce audio ne
-  prend maintenant un transfert DMA que si sa file contient moins de 12 Ko ;
-  sinon le canal 2 reste actif (CSR bit 3) jusqu'à ce qu'il y ait de la place.
-  Débit mesuré ensuite : environ 24 Ko/s, file stable autour de 13 Ko.
+- Son haché : dans le menu, le pilote renvoie sa boucle musicale de 2 s
+  toutes les 0,5 s environ (ce qui le cadence sur le vrai matériel n'est pas
+  identifié : ni l'EOI, ni le bit 9 d'état). Couper des octets quand la file
+  déborde cassait des trames MP2 (son haché). Retenir le DMA du pilote était
+  pire : il l'attend en `$E50EB0` avec les interruptions masquées (SR $2700),
+  le CDIC perdait alors des secteurs et les images chargées étaient
+  décalées (photos des rédacteurs mêlées de morceaux d'autres écrans après
+  une sélection). Solution retenue : le DMA n'est jamais retenu, et quand la
+  file contient déjà plus de 16 Ko au début d'un nouveau programme, ce
+  programme entier (jusqu'à son code de fin) est écarté. Les boucles étant
+  identiques, la musique reste continue (44 100 échantillons/s, aucune
+  sous-alimentation). `EMU_FMA_HOLD` réactive la retenue pour les tests.
 - Photos absentes du menu « Choisissez un rédacteur en chef » : le plan B a
   la transparence 0xB (« transparent si drapeau de région 0 faux »). Les
   registres de région D0-D7 n'étaient pas émulés. Valeurs écrites par le
@@ -125,11 +132,53 @@ Journal interactif (22/11/2026, rejeu d'une partie enregistrée) :
   retenu : bit 23 = change un drapeau, bit 20 = nouvelle valeur, bit 16 =
   drapeau 0 / 1, bits 9-0 = X en pixels haute résolution, drapeaux à 0 en
   début de ligne. Les changements de poids par région ne sont pas émulés.
+- Son encore haché dans le menu (test réel) : à l'arrivée sur le menu, le
+  CDIC joue aussi du son ADPCM (environ 5 s) pendant l'audio MPEG. La sortie
+  son n'avait qu'une file : les deux flux s'y succédaient par morceaux.
+  `audio_out.c` a maintenant une file par source (CDIC, cartouche) mélangées
+  dans le rappel SDL, comme le mélangeur audio du lecteur.
+- Artefacts vidéo (blocs décalés, images fantômes) : l'émulateur décodait
+  parfois une image dont la fin n'était pas encore arrivée par DMA (un
+  compteur d'« images complètes » en avance d'une image). Les images
+  prédites à partir de cette image tronquée étaient fausses jusqu'à l'image I
+  suivante. Le décodage suit maintenant la règle de pl_mpeg : une image
+  n'est décodée que lorsque le code de début de l'image suivante est dans
+  le tampon, ou en fin de séquence / de programme. Vérifié en comparant
+  l'empreinte de chaque image décodée avec un décodage hors émulateur du
+  même flux : 109 images différentes sur 295 avant, aucune après, à part
+  celles qui suivent un vidage de file demandé par le jeu (le décodage hors
+  émulateur ne le reproduit pas).
+- En-têtes d'image : `sc_kind` valait 0 pour un en-tête d'image, ce qui
+  désactivait sa lecture. Type, référence temporelle, code temporel du GOP
+  et indicateurs début de GOP / séquence sont maintenant lus (registres
+  d'état, interruptions GOP / SEQ).
+- Fin de flux audio (UNF) : signalée dès que la puce n'a plus rien de
+  décodé et moins d'une trame MP2 en entrée. Le *Journal interactif* lance
+  l'animation de son menu sur cet UNF (fin du clip d'introduction, 61 s).
+  Cas particulier : quand il ne reste qu'un échantillon, le rééchantillonneur
+  ne peut plus avancer ; cela compte comme vide seulement après 400 ms sans
+  données (*The 7th Guest* attend cet UNF pour relancer sa boucle d'ambiance,
+  alors que la musique du menu du Journal, une boucle de 2 s renvoyée par le
+  jeu, reprend après une pause de ~210 ms et ne doit pas s'arrêter). Un délai
+  de 400 ms appliqué à tous les cas empêchait l'UNF de 61 s : cadre du menu
+  figé et musique en boucle mal enchaînée. `EMU_FMA_UNF_MS` change ce délai
+  (tests).
+- Volumes (atténuateurs du Green Book : gauche→gauche, gauche→droite,
+  droite→droite, droite→gauche, pas de 1 dB, bit 7 = voie coupée), appliqués
+  à chaque source dans le mélangeur (`audio_out_set_atten`) :
+  - son CD-i : commande `$Cx` + 4 octets sur le canal 2 du 68HC05 ; les bits
+    1, 0, 3, 2 de `x` coupent LL, LR, RR, RL (`$C5` = stéréo, `$CA` =
+    inversé, mesures du cœur CDi_MiSTer, doc/dac.md) ;
+  - cartouche : le pilote charge un programme dans le DSP56001, puis envoie
+    la commande hôte `$13` (CVR = `$93`) suivie de 4 octets sur TXL
+    (registre `$E03024` après sélection par `$E03022`) : LL, LR, RL, RR.
+  Menu du Journal : voix CD-i à −4 dB, musique MPEG à −24 dB.
+  Quand les deux voies d'une même sortie sont ouvertes (`$C0`, mélange
+  mono), leur somme est ramenée à 0 dB pour ne pas doubler ni saturer.
 
 ## Prochaines étapes
 
-- *The 7th Guest* : vérifier en vrai au-delà de l'escalier ; quelques
-  artefacts d'image par moments.
+- *The 7th Guest* : vérifier en vrai le reste du jeu.
+- Vérifier en vrai que les artefacts d'image ont disparu (corrigés en test).
 - Position / taille de l'image selon les registres de fenêtre ; synchro
   son / image.
-- Journal interactif : quelques artefacts d'image par moments.

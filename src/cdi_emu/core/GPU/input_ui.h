@@ -22,4 +22,8 @@ int  input_ui_event(const SDL_Event *e);
 /* Draw the panel (logical 768x576 coordinates) */
 void input_ui_render(SDL_Renderer *ren);
 
+/* A TrueType font of that size (system fonts), NULL if none */
+struct _TTF_Font;
+struct _TTF_Font *input_ui_font(int size);
+
 #endif

@@ -84,20 +84,22 @@ static uint8_t io_regs[IO_SIZE];
 /* EMU_WATCH=start-end (hex): report the first writes into that range, with
  * the CPU PC (bus_watch_pc) and whether the CDIC DMA did it */
 uint32_t bus_watch_pc = 0;
+long long bus_watch_step = 0;        /* instruction count (main) */
 int      bus_watch_on = 1;           /* main clears it until EMU_WATCH_AFTER */
 static uint32_t watch_lo = 1, watch_hi = 0;
-static int watch_left = 40, watch_init = 0, in_dma = 0;
+static int watch_left = 40, watch_init = 0, in_dma = 0;   /* EMU_WATCH_MAX overrides 40 */
 static void watch(uint32_t addr, uint32_t v, int size)
 {
     if (!watch_init) {
         watch_init = 1;
         const char *e = getenv("EMU_WATCH");
         if (e) sscanf(e, "%x-%x", &watch_lo, &watch_hi);
+        if (getenv("EMU_WATCH_MAX")) watch_left = atoi(getenv("EMU_WATCH_MAX"));
     }
     if (bus_watch_on && addr >= watch_lo && addr <= watch_hi && watch_left > 0) {
         watch_left--;
-        fprintf(stderr, "[WATCH] W%d %06X = %0*X  pc=%06X%s\n", size, addr, size / 4, v,
-                bus_watch_pc, in_dma ? " (CDIC DMA)" : "");
+        fprintf(stderr, "[WATCH] W%d %06X = %0*X  pc=%06X step=%lld%s\n", size, addr, size / 4, v,
+                bus_watch_pc, bus_watch_step, in_dma ? " (CDIC DMA)" : "");
     }
 }
 

@@ -100,6 +100,7 @@ typedef struct scc_frame {
     uint32_t vsr_start;         /* display start address after the ICA */
     int      ica_count;         /* ICA instructions executed */
     int      interrupt;         /* an INTERRUPT ran (ICA or any DCA) */
+    uint32_t line_addr[SCC_OUT_MAX_H]; /* first byte of each active line (tests) */
 } scc_frame_t;
 
 /* Render one frame from video DRAM (the first 1 MB of system DRAM). */

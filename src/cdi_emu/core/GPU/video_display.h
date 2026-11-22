@@ -51,6 +51,23 @@ int video_display_handle_event(const void *sdl_event);
 /* Switch between window and full screen (F11, Alt+Enter) */
 void video_display_toggle_fullscreen(void);
 
+/* F3: statistics overlay. The emulator gives the text (lines separated by
+ * '
+'); the display adds its own measured frame rate. */
+/* Picture format: 0 = 4:3, 1 = 16:9 (stretched); saved in options.ini */
+void video_display_set_aspect(int wide);
+int  video_display_aspect_wide(void);
+
+/* Video filter (0 none, 1 smooth, 2 scanlines, 3 CRT); saved in options.ini */
+#define VIDEO_FILTERS 4
+void video_display_set_filter(int f);
+int  video_display_filter(void);
+const char *video_display_filter_name(void);
+
+void video_display_toggle_stats(void);
+int  video_display_stats_on(void);
+void video_display_set_stats(const char *text);
+
 /* Show / hide the PC mouse cursor over the video window (F8) */
 void video_display_toggle_host_cursor(void);
 
@@ -83,6 +100,8 @@ enum {
     VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT, VM_RESET,
     VM_IMPORT_ROM,
     VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
+    VM_ASPECT_43, VM_ASPECT_169, VM_FILTER0, /* VM_FILTER0 + 0..3 */
+    VM_FILTER_LAST = VM_FILTER0 + 3,
     VM_SWAP = 1201, VM_INPUT_CONFIG, VM_MOUSE,
     VM_FMV = 1401,           /* Materiel > Digital Video Cartridge */
     VM_DRIVE_PLAY = 1300,    /* + drive letter - 'A': play the disc in it */
