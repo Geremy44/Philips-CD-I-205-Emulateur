@@ -1,6 +1,6 @@
 # Philips CD-i 205 — Émulateur
 
-> ⚠️ **Avertissement légal** — Ce projet ne fournit aucune ROM, BIOS ni logiciel sous copyright. Philips conserve tous les droits sur ses œuvres. Les fichiers `.bin`, `.rom` et `.iso` **ne doivent jamais** être committés (voir `.gitignore`). Ce dépôt ne contient que des outils d'analyse et de documentation de reverse-engineering à des fins éducatives.
+> ⚠️ **Avertissement légal** — Ce projet ne fournit aucune ROM, BIOS ni logiciel sous copyright. Philips conserve tous les droits sur ses œuvres. Les fichiers `.bin`, `.rom` et `.iso` **ne doivent jamais** être committés (voir `.gitignore`). Ce dépôt ne contient que le code source de l'émulateur et de la documentation de reverse-engineering, à des fins éducatives.
 
 ---
 
@@ -363,14 +363,9 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 
 3. **Explorer la documentation**
    - Console : `docs/console/CONSOLE_OVERVIEW.md`
-   - FMV : `docs/fmv/FMV_OS9_FINDINGS.md`
+   - FMV : `docs/fmv/FMV_EMULATION_NOTES.md`, `docs/fmv/FMV_OS9_FINDINGS.md`
 
-4. **Utiliser les outils d'analyse**
-   ```bash
-   cd tools && python os9_module_parser.py --help
-   ```
-
-5. **Exécuter l'émulateur** (depuis `src/cdi_emu`, la ROM est lue dans `ROM/`)
+4. **Exécuter l'émulateur** (depuis `src/cdi_emu`, la ROM est lue dans `ROM/`)
    ```bash
    cd src/cdi_emu && bin/cdi205 "chemin/vers/jeu.cue"
    ```

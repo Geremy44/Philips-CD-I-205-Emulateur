@@ -21,7 +21,7 @@ La cartouche est pilotée par le **CD-i 205 via deux modules OS-9** : `fmvll` (b
 
 ## 2. Format d'en-tête module OS-9 68k
 
-Les modules OS-9/68000 partagent un format d'en-tête standard reconnu par le parseur `tools/os9_module_parser.py` :
+Les modules OS-9/68000 partagent un format d'en-tête standard suivant :
 
 ```
 Offset  Contenu              Description
@@ -292,8 +292,7 @@ Sortie Composite / S-Video
 
 | Script | Usage |
 |--------|-------|
-| `tools/check_FMV_entrelacement.py` | Désentrelace le dump de la cartouche FMV (le dump est entrelacé — lignes paires/impaires mélangées) |
-| `tools/os9_module_parser.py` | Parse les en-têtes OS-9 dans un dump binaire (modules 68000) |
+| *(retirés)* | Les scripts Python d'analyse (désentrelacement du dump, analyse des en-têtes OS-9) ont été retirés du dépôt le 22/11/2026 ; ils restent dans l'historique git. |
 
 ---
 

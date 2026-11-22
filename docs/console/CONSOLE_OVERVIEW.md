@@ -151,7 +151,7 @@ Un **second processeur** (type 68HC05 ou equivalent) gère :
 
 ### 4.2 Modules OS-9 attendus dans la ROM système
 
-> 🔲 **À extraire** : les modules OS-9 de la ROM CD-RTOS doivent être dumpés et parsés avec `tools/os9_module_parser.py`.
+> 🔲 **À extraire** : les modules OS-9 de la ROM CD-RTOS doivent être dumpés et parsés (les scripts Python d'analyse ont été retirés du dépôt le 22/11/2026).
 
 | Module | Rôle |
 |--------|------|
@@ -172,7 +172,7 @@ Un **second processeur** (type 68HC05 ou equivalent) gère :
 |-------|----------|------|-------|
 | Extraction ROM CD-RTOS | ⭐⭐⭐ | 🔲 À démarrer | dump mémoire ou fichier .bin à acquérir |
 | Cartographie mémoire complète | ⭐⭐⭐ | 🔲 À démarrer | cross-ref doc + dump |
-| Identification modules OS-9 ROM | ⭐⭐ | 🔲 À démarrer | utiliser `os9_module_parser.py` |
+| Identification modules OS-9 ROM | ⭐⭐ | 🔲 À démarrer | — |
 | Reverse-engineering MCD212 | ⭐⭐⭐ | 🔲 À démarrer | docs externes + tests |
 | Analyse CDIC | ⭐⭐ | 🔲 À démarrer | contrôleur CD-ROM |
 | Implémentation timers 68070 | ⭐ | 🔲 À démarrer | 2 timers internes |
