@@ -43,6 +43,8 @@ void     vsd_command(vsd_t *v, uint32_t word);
 
 /* Combine plane A (master VSC, V7..V0) and plane B (slave VSC, V15..V8)
  * pixel values into ARGB8888. a_on / b_on: that VSC is displaying (DE). */
+extern int      vsd_ext_on;            /* set per pixel: external video replaces the backdrop */
+extern uint32_t vsd_ext_rgb;
 uint32_t vsd_mix(const vsd_t *v, uint8_t a, int a_on, uint8_t b, int b_on);
 
 /* Same, with an already decoded RGB for a plane coded in DYUV

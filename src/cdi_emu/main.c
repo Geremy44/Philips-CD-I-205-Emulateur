@@ -30,6 +30,7 @@
 #include "core/audio_out.h"
 #include "core/rtc_m48t08.h"
 #include "core/CDIC/cdrom_win.h"
+#include "core/FMV/fmv.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -208,6 +209,17 @@ static void menu_action(int id)
         slave_hle_set_tray(g_be, 1, 0);                 /* door open: CD-RTOS forgets the disc */
         insert_disc_dialog(1);
         break;
+    case VM_FMV:                                        /* cartridge in / out + reset */
+        if (!fmv_rom_loaded()) {
+            video_display_message("Cartouche vid\xC3\xA9o num\xC3\xA9rique",
+                "ROM de la cartouche introuvable :\nROM/FMV_combined_7308hi_7307lo.bin");
+            break;
+        }
+        fmv_set_enabled(!fmv_enabled());
+        fmv_option_save(fmv_enabled());
+        video_display_menu_check(VM_FMV, fmv_enabled());
+        g_reset_request = 1;                            /* CD-RTOS looks for it at boot */
+        break;
     case VM_RESET:                                      /* reset button: warm reboot */
         g_reset_request = 1;
         break;
@@ -337,6 +349,18 @@ int main(int argc, char* argv[]) {
         fprintf(stderr,"Failed to load ROM\n");
         bus_destroy(bus); return 1;
     }
+    if (getenv("EMU_ROM_DUMP")) {                 /* debug: the ROM as loaded */
+        FILE *rf = fopen(getenv("EMU_ROM_DUMP"), "wb");
+        if (rf) { fwrite(bus->rom, 1, sizeof(bus->rom), rf); fclose(rf); }
+    }
+    /* Digital Video Cartridge (MPEG), optional: menu Materiel (options.ini),
+     * EMU_FMV=1 / 0 overrides it. Off by default. */
+    if (fmv_init("./ROM/FMV_combined_7308hi_7307lo.bin") == 0) {
+        int want = fmv_option_load() == 1;
+        if (getenv("EMU_FMV") && *getenv("EMU_FMV")) want = *getenv("EMU_FMV") == '1';
+        fmv_set_enabled(want);
+        fmv_reset();
+    }
     printf("ROM loaded successfully\n");
 
     /* Pointeur vers le contrôleur vidéo possédé par le bus */
@@ -392,6 +416,7 @@ int main(int argc, char* argv[]) {
     video_display_set_menu_cb(menu_action);
     video_display_set_swap(g_swap_buttons);
     video_display_menu_check(VM_SWAP, g_swap_buttons);
+    video_display_menu_check(VM_FMV, fmv_enabled());
     video_display_menu_check(VM_CONSOLE, uart_console_is_visible());
 
     /* Host sound: CD-i ADPCM decoded by the CDIC */
@@ -463,10 +488,10 @@ int main(int argc, char* argv[]) {
     int user_pos = 0;
     /* EMU_AUTOCLICK=x,y,step: press button 1 at (x,y) at that instruction count
      * (pointer units: x = frame pixel 0..767, y = half line 0..479) */
-    long long ac_x = -1, ac_y = 0, ac_step = 0;
+    long long ac_x = -1, ac_y = 0, ac_step = 0, ac_count = 8;   /* 4th value: number of clicks */
     long long watch_after = getenv("EMU_WATCH_AFTER") ? atoll(getenv("EMU_WATCH_AFTER")) : 0;
     if (getenv("EMU_AUTOCLICK"))
-        sscanf(getenv("EMU_AUTOCLICK"), "%lld,%lld,%lld", &ac_x, &ac_y, &ac_step);
+        sscanf(getenv("EMU_AUTOCLICK"), "%lld,%lld,%lld,%lld", &ac_x, &ac_y, &ac_step, &ac_count);
     /* Real-time pacing: emulated time (CPU cycles / 15 MHz) follows the host
      * clock. EMU_SPEED = percent of real speed (default 100, 0 = unlimited). */
     int speed = getenv("EMU_SPEED") ? atoi(getenv("EMU_SPEED")) : 100;
@@ -565,7 +590,7 @@ int main(int argc, char* argv[]) {
             if (i == ac_step + 3000000) {      /* release, and click again later (8 times) */
                 push_pointer(be, (int)ac_x, (int)ac_y, 0);
                 static int ac_n = 0;
-                if (++ac_n < 8) ac_step += 100000000; else ac_x = -1;
+                if (++ac_n < ac_count) ac_step += 100000000; else ac_x = -1;
             }
         }
         if (os9_log)
@@ -594,7 +619,7 @@ int main(int argc, char* argv[]) {
 
         /* Advance video timing by the consumed cycles */
         int new_frame = scc66470_tick(video, cycles);
-        if (new_frame) scc66470_vretrace(video, bus->dram, (uint32_t)sizeof(bus->dram));
+        if (new_frame) { scc66470_vretrace(video, bus->dram, (uint32_t)sizeof(bus->dram)); fmv_frame(); }
         if (scc66470_tick(video_b, cycles)) scc66470_vretrace(video_b, bus->dram, (uint32_t)sizeof(bus->dram));
 
         /* On-chip timer, then present the highest pending interrupt:
@@ -603,11 +628,14 @@ int main(int argc, char* argv[]) {
         rtc_virtual_cycles += (uint64_t)cycles;
         onchip68070_tick(onchip, cycles);
         cdic_tick(cdic, cycles);
+        fmv_tick(cycles);                          /* Digital Video Cartridge, if inserted */
         {
             int vector = 0, v2 = 0;
             int level = onchip68070_irq(onchip, &vector);
             int l2 = cdic_irq(cdic, &v2);          /* CDIC: level 4, vector from IVEC */
             if (l2 > level) { level = l2; vector = v2; }
+            /* Digital Video Cartridge: level 4 too (descriptors mv / ma), vectored */
+            if (level < 4 && l2 < 4) { int v3 = 0; if (fmv_irq(&v3)) { level = 4; vector = v3; } }
             /* SCC66470 IT1 (master or slave): level 5, autovector 61 ("vid") */
             if (level < 5 && (scc66470_irq(video) || scc66470_irq(video_b))) { level = 5; vector = 61; }
             if (level < 2 && be->irq && be->irq(be->ctx)) {
@@ -633,6 +661,7 @@ int main(int argc, char* argv[]) {
             }
             video_display_reset_vsd();            /* V.S.D. too (palette, weights) */
             cdic_init(cdic);
+            fmv_reset();
             if (be->reset) be->reset(be->ctx);
             m68k_reset(&cpu);
             uart_feed('1');

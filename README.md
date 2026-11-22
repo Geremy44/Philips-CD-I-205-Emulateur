@@ -103,8 +103,24 @@ Ce qui fonctionne :
 
 Pas encore émulé : graphismes CD+G, drapeaux de région (matte) et facteurs par région,
 codage RGB555 et son bit de transparence, valeurs de départ DYUV rechargées
-ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
-(MPEG, nécessaire par exemple pour *The 7th Guest*).
+ligne par ligne, interruptions UART/I²C, afficheur de façade, décodage de
+la cartouche FMV (MPEG, nécessaire par exemple pour *The 7th Guest*).
+
+**Cartouche vidéo numérique (FMV)** — menu **Matériel > Cartouche vidéo
+numérique (MPEG)**, désactivée par défaut, mémorisée dans `options.ini`
+(`EMU_FMV=1` / `0` la force) ; le changement provoque un reset, CD-RTOS ne
+cherchant la cartouche qu'au démarrage. Il faut sa ROM dans
+`ROM/FMV_combined_7308hi_7307lo.bin` (EPROM P7307 + P7308 R4.1, non fournie).
+Émulées : la ROM en `$E40000`, le 1 Mo de mémoire en `$D00000`, la DRAM vidéo
+en `$E80000`, la puce vidéo MPEG-1 (`$E04000`) et la puce audio (`$E03000`)
+avec leurs registres, leurs interruptions (niveau 4, vectorisées) et leurs
+transferts par le canal DMA 2 du 68070. L'image MPEG remplace la couleur de
+fond derrière les plans du CD-i ; le son MPEG part vers la sortie audio.
+Le comportement des puces suit l'émulation de MAME (demande de fusion
+[#16181](https://github.com/mamedev/mame/pull/16181), BSD-3, d'après le cœur
+[CDi_MiSTer](https://github.com/MiSTer-devel/CDi_MiSTer)) ; le décodage
+MPEG-1 utilise [pl_mpeg](https://github.com/phoboslab/pl_mpeg) (MIT).
+Détails : `docs/fmv/FMV_EMULATION_NOTES.md`.
 
 ### Jeux testés
 
@@ -113,14 +129,14 @@ ligne par ligne, interruptions UART/I²C, afficheur de façade, cartouche FMV
 | *Astérix : Le Défi de César* | 🟡 Lancement OK, pas testé complètement | Intro, dessins animés, menus, plateaux, voix, musique, bruitages ; une partie de 30 min sans souci, jouée depuis le vrai CD (lecteur du PC) ; partie complète pas encore vérifiée |
 | *Inca* | 🟡 Lancement OK, pas testé complètement | Image, son et curseur ; demandait l'INTERRUPT des DCA et les facteurs DB/DC changés en cours d'image |
 | *CDI Pinball Volume 1* | 🟡 Lancement OK, pas testé complètement | Les deux flippers répondent (boutons 1 / 2) ; un peu de latence des commandes dans l'émulateur |
-| *The 7th Guest* (disque 1) | ⛔ Non supporté | Nécessite la cartouche FMV (MPEG) |
+| *The 7th Guest* (disque 1) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : introduction et cinématiques MPEG avec image et son, jusqu'à l'escalier ; quelques artefacts d'image par moments |
 | *The 7th Guest* (disque 2, CD audio) | ✅ Fonctionne | Lecteur de CD audio du shell : 7 pistes, lecture, pause, choix de piste, temps écoulé |
 | *CD Shoot* | 🟡 Lancement OK, pas testé complètement | Jouable ; la souris reste capturée dans la fenêtre pendant la visée |
 | *Secret Mission* | 🟡 Lancement OK, pas testé complètement | Jeu et cinématiques avec image et son (le CDIC garde ses filtres pendant une mise à jour `$2E`) |
 | *Kether* | 🟡 Lancement OK, pas testé complètement | Semble bien fonctionner (image, son, sons en mémoire) |
 | *Harvest of the Sun* (visite interactive sur Van Gogh) | 🟡 Lancement OK, pas testé complètement | Images propres, fondus et son OK |
 | *L'Open de Palm Springs* | 🟡 Lancement OK, pas testé complètement | Fonctionne bien |
-| *Journal interactif 94* (TF1, 2 disques) | ⛔ Non supporté | Disques Digital Video (vidéo et audio MPEG) : affiche correctement « Votre carte numérique n'est pas installée », comme un vrai 205 sans cartouche FMV |
+| *Journal interactif 94* (TF1, disque 2) | 🟡 Lancement OK, pas testé complètement | Avec la cartouche FMV : vidéo MPEG à 25 images/s et son MPEG (tests sans fenêtre) ; sans elle, « Votre carte numérique n'est pas installée », comme un vrai 205 |
 
 ### Charger un disque
 
@@ -168,6 +184,7 @@ la fermer quitte l'émulateur. La console série est masquée par défaut
 | Boutons du CD-i | clics gauche / droit (inversés par défaut comme sur la manette, **F7** pour échanger) ; Espace-Entrée / Retour arrière-Ctrl droit ; manette A-X / B-Y |
 | Assigner les touches et la manette | menu **Contrôles > Assigner les touches…** : clic sur une case puis touche, bouton ou direction de stick ; clic droit efface ; enregistré dans `controles.ini` à côté de l'exécutable |
 | Couper la souris (clavier / manette seuls) | menu **Contrôles > Souris active** (aussi dans le panneau d'assignation) |
+| Brancher / retirer la cartouche vidéo numérique (MPEG) | menu **Matériel** (le CD-i redémarre) |
 | Réinitialiser le CD-i (bouton reset, le disque reste) | menu **Fichier > Réinitialiser le CD-i** ou **Ctrl+R** |
 | Ouvrir un disque (image) | menu **Fichier > Ouvrir un disque…** ou **Ctrl+O**, ou le bouton OPEN du CD-i |
 | Plein écran 4:3 (bandes noires) / fenêtre | **F11** ou **Alt+Entrée** |
@@ -228,6 +245,11 @@ et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
 | `EMU_CPU_STATS=1` | cycles moyens par instruction, tous les 50 millions d'instructions |
 | `EMU_HEADLESS=1` | fenêtre vidéo cachée (tests automatiques) |
 | `EMU_UI_SHOT=f.bmp` | ouvre le panneau d'assignation et enregistre une capture de la fenêtre |
+| `EMU_FMV=1` / `0` | cartouche vidéo numérique branchée / retirée (remplace le choix du menu) |
+| `EMU_FMV_LOG=1` / `2` | journal de la cartouche (commandes, images décodées, niveau audio ; 2 : tous les registres) |
+| `EMU_FMV_DUMP=f.mpg` / `EMU_FMA_DUMP=f.mp2` | enregistre le flux MPEG envoyé aux puces / l'audio reçu (tests) |
+| `EMU_FORCE_RESET=n` | redémarrage à chaud au pas n (tests) |
+| `EMU_ROM_DUMP=f.bin` | enregistre la ROM telle que chargée |
 
 ---
 
@@ -237,6 +259,7 @@ et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
 src/cdi_emu/
 ├── main.c                    ← boucle principale (CPU, timer, IRQ, vidéo, SDL)
 ├── build-project.bat         ← compilation Windows (gcc)
+├── build-linux.sh            ← compilation Linux (gcc + pkg-config)
 ├── ROM/                      ← ROM système (non fournie, voir avertissement)
 └── core/
     ├── bus.c/h               ← carte mémoire et routage MMIO
@@ -336,17 +359,7 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
    cd Philips-CD-I-205-Emulateur
    ```
 
-2. **Compiler l'émulateur** (gcc + SDL2 + SDL2_ttf, par ex. MSYS2 UCRT64)
-   ```cmd
-   cd src\cdi_emu && build-project.bat
-   ```
-   ou directement :
-   ```bash
-   cd src/cdi_emu
-   gcc -O2 -std=c11 -DSDL_MAIN_HANDLED $(pkg-config --cflags sdl2 SDL2_ttf) \
-       main.c core/*.c core/CPU/*.c core/GPU/*.c core/SLAVE/*.c core/CDIC/*.c \
-       $(pkg-config --libs sdl2 SDL2_ttf) -o cdi205
-   ```
+2. **Compiler l'émulateur** : voir [Compilation](#️-compilation) ci-dessous.
 
 3. **Explorer la documentation**
    - Console : `docs/console/CONSOLE_OVERVIEW.md`
@@ -359,16 +372,55 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 
 5. **Exécuter l'émulateur** (depuis `src/cdi_emu`, la ROM est lue dans `ROM/`)
    ```bash
-   cd src/cdi_emu && ./cdi205
+   cd src/cdi_emu && bin/cdi205 "chemin/vers/jeu.cue"
    ```
-   Deux fenêtres s'ouvrent : le terminal UART et la sortie vidéo. Le menu
-   apparaît après une trentaine de secondes.
+   Sous Windows : `bin\cdi_emu.exe`. Le menu du CD-i apparaît après une
+   trentaine de secondes.
 
-6. **Dépendances**
-   L'émulateur nécessite les bibliothèques SDL2 et SDL2_ttf :
-   - Ubuntu/Debian : `sudo apt-get install libsdl2-dev libsdl2-ttf-dev`
-   - macOS : `brew install sdl2 sdl2_ttf`
-   - Windows : Télécharger les bibliothèques depuis https://www.libsdl.org/
+---
+
+## 🛠️ Compilation
+
+Les ROM ne sont pas fournies. Placer la ROM système
+`CDI205-00_PS-7211_REL.2.1.hex` dans `src/cdi_emu/ROM/` et, pour la
+cartouche FMV, `FMV_combined_7308hi_7307lo.bin` dans le même dossier.
+
+### Windows (MSYS2 UCRT64)
+
+1. Installer [MSYS2](https://www.msys2.org/), puis dans le terminal
+   **MSYS2 UCRT64** :
+   ```bash
+   pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-SDL2 mingw-w64-ucrt-x86_64-SDL2_ttf
+   ```
+2. Compiler depuis `cmd`, avec `C:\msys64\ucrt64\bin` dans le `PATH` :
+   ```cmd
+   cd src\cdi_emu
+   build-project.bat
+   ```
+   L'exécutable est `bin\cdi_emu.exe`.
+3. Pour le lancer hors de MSYS2, copier à côté de l'exe les DLL de
+   `C:\msys64\ucrt64\bin` dont il dépend (`SDL2.dll`, `SDL2_ttf.dll`,
+   `libfreetype-6.dll`, `libharfbuzz-0.dll`, `libpng16-16.dll`, `zlib1.dll`…).
+   Dans le terminal UCRT64, `ldd bin/cdi_emu.exe | grep ucrt64` en donne la
+   liste. La version portable des releases contient déjà ces DLL.
+
+### Linux
+
+> ⚠️ La compilation Linux n'a pas encore été testée sur une vraie machine.
+> Le code isole les parties propres à Windows (lecteur CD physique, boîte
+> de dialogue d'ouverture), qui sont simplement absentes sous Linux.
+
+1. Installer les dépendances :
+   - Debian / Ubuntu : `sudo apt install build-essential pkg-config libsdl2-dev libsdl2-ttf-dev fonts-dejavu-core`
+   - Fedora : `sudo dnf install gcc make pkgconf-pkg-config SDL2-devel SDL2_ttf-devel dejavu-sans-mono-fonts`
+   - Arch : `sudo pacman -S base-devel sdl2 sdl2_ttf ttf-dejavu`
+2. Compiler :
+   ```bash
+   cd src/cdi_emu
+   sh build-linux.sh
+   ```
+   L'exécutable est `bin/cdi205`.
+3. Lancer : `bin/cdi205 "chemin/vers/jeu.cue"`.
 
 ---
 
@@ -376,6 +428,10 @@ Ce projet sépare rigoureusement l'analyse en **deux axes indépendants** :
 
 Documentation de reverse-engineering à fins éducatives uniquement. Voir avertissement légal en tête de fichier.
 
+L'émulateur inclut [pl_mpeg](https://github.com/phoboslab/pl_mpeg) (MIT) et un portage en C de
+l'émulation de la cartouche FMV de MAME ([#16181](https://github.com/mamedev/mame/pull/16181), BSD-3-Clause).
+Leurs mentions de copyright et textes de licence sont dans [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
 ---
 
-*Dernier mise à jour : 20 novembre 2026*
+*Dernière mise à jour : 22 novembre 2026*

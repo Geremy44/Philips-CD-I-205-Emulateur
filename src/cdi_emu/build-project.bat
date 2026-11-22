@@ -61,6 +61,14 @@ gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/CDIC/cdrom_win.c -o bin/cdrom_win.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/FMV/fmv.c -o bin/fmv.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/FMV/mpeg_demux.c -o bin/mpeg_demux.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/FMV/fmv_video.c -o bin/fmv_video.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/FMV/fmv_audio.c -o bin/fmv_audio.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/SLAVE/slave.c -o bin/slave.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/SLAVE/slave_hle.c -o bin/slave_hle.o
@@ -75,7 +83,7 @@ if %errorlevel% neq 0 (
 )
 
 echo Linking executable...
-gcc -o bin/cdi_emu.exe bin/*.o -lSDL2main -lSDL2 -lSDL2_ttf -lcomdlg32 -lm
+gcc -o bin/cdi_emu.exe bin/*.o -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lcomdlg32 -lm
 
 if %errorlevel% neq 0 (
     echo Error linking executable

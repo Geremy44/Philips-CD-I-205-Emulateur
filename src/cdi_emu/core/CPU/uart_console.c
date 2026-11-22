@@ -85,6 +85,9 @@ static TTF_Font *try_open_font(void) {
         "C:/Windows/Fonts/consola.ttf",   /* Consolas */
         "C:/Windows/Fonts/cour.ttf",      /* Courier New */
         "/ucrt64/share/fonts/TTF/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",   /* Debian / Ubuntu */
+        "/usr/share/fonts/TTF/DejaVuSansMono.ttf",               /* Arch */
+        "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf", /* Fedora */
         NULL
     };
     for (int i = 0; paths[i]; i++) {

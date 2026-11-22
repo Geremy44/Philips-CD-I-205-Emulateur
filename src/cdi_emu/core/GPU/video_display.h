@@ -79,6 +79,7 @@ enum {
     VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT, VM_RESET,
     VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
     VM_SWAP = 1201, VM_INPUT_CONFIG, VM_MOUSE,
+    VM_FMV = 1401,           /* Materiel > Digital Video Cartridge */
     VM_DRIVE_PLAY = 1300,    /* + drive letter - 'A': play the disc in it */
     VM_DRIVE_RIP  = 1330     /* + drive letter - 'A': rip it to .bin / .cue */
 };

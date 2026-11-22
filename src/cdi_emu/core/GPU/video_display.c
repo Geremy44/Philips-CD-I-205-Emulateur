@@ -16,6 +16,7 @@
 #include "video_display.h"
 #include "scc66470.h"
 #include "vsd.h"
+#include "../FMV/fmv.h"
 #include "input_ui.h"
 #include "../input_map.h"
 #include "../CDIC/cdrom_win.h"
@@ -201,6 +202,8 @@ static void create_menu(void)
     if (!SDL_GetWindowWMInfo(win, &info) || info.subsystem != SDL_SYSWM_WINDOWS) return;
     HWND hwnd = info.info.win.window;
     HMENU file = CreatePopupMenu(), view = CreatePopupMenu(), ctl = CreatePopupMenu();
+    HMENU hw = CreatePopupMenu();
+    AppendMenuW(hw, MF_STRING, VM_FMV, L"Cartouche vidéo numérique (MPEG)");
     AppendMenuW(file, MF_STRING, VM_OPEN_DISC, L"Ouvrir un disque...\tCtrl+O");
     AppendMenuW(file, MF_STRING, VM_EJECT,     L"\u00c9jecter le disque");
     AppendMenuW(file, MF_STRING, VM_RESET,     L"R\u00e9initialiser le CD-i\tCtrl+R");
@@ -233,6 +236,7 @@ static void create_menu(void)
     AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)file, L"Fichier");
     AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)view, L"Affichage");
     AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)ctl,  L"Contr\u00f4les");
+    AppendMenuW(menu_bar, MF_POPUP, (UINT_PTR)hw,   L"Mat\u00e9riel");
     SetMenu(hwnd, menu_bar);
     SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
     SDL_SetWindowSize(win, WIN_W, WIN_H);        /* keep the 4:3 client area */
@@ -662,7 +666,10 @@ int video_display_update(void *scc66470, void *bus)
             /* DYUV planes are decoded a whole line at a time (delta coding) */
             if (dyuv_a) vsd_dyuv_line(&vsd, 0, src_a, w, line_a);
             if (dyuv_b && y < hb) vsd_dyuv_line(&vsd, 1, src_b, wb < w ? wb : w, line_b);
+            int ext = fmv_video_showing();
+            vsd_ext_on = 0;
             for (int x = 0; x < w; x++) {
+                if (ext) vsd_ext_on = fmv_video_pixel(x * 384 / w, y, &vsd_ext_rgb);
                 int b_on = frame_b->enabled && x < wb && y < hb;
                 dst[x] = vsd_mix_rgb(&vsd, src_a[x], frame->enabled, dyuv_a ? &line_a[x] : NULL,
                                      b_on ? src_b[x] : 0, b_on, (dyuv_b && b_on) ? &line_b[x] : NULL);

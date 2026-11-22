@@ -38,7 +38,9 @@ static TTF_Font *load_font(int size)
 {
     static const char *paths[] = {
         "C:/Windows/Fonts/segoeui.ttf", "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/consola.ttf", "DejaVuSans.ttf", NULL
+        "C:/Windows/Fonts/consola.ttf", "DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf", NULL
     };
     if (!TTF_WasInit() && TTF_Init() != 0) return NULL;
     for (int i = 0; paths[i]; i++) {

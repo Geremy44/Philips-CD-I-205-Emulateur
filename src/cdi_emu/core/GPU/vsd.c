@@ -164,6 +164,11 @@ static uint32_t scale_rgb(uint32_t rgb, uint32_t icf)
     return (r << 16) | (g << 8) | b;
 }
 
+/* external video (MPEG picture of the Digital Video Cartridge) for the
+ * pixel being mixed: it takes the place of the backdrop */
+int      vsd_ext_on = 0;
+uint32_t vsd_ext_rgb = 0;
+
 uint32_t vsd_mix(const vsd_t *v, uint8_t a, int a_on, uint8_t b, int b_on)
 {
     return vsd_mix_rgb(v, a, a_on, NULL, b, b_on, NULL);
@@ -197,8 +202,11 @@ uint32_t vsd_mix_rgb(const vsd_t *v, uint8_t a, int a_on, const uint32_t *dyuv_a
             uint32_t s = ((a >> sh) & 0xFF) + ((b >> sh) & 0xFF);
             rgb |= (s > 255 ? 255u : s) << sh;
         }
-    } else if (v->plane_order & 1) rgb = vis_b ? rgb_b : vis_a ? rgb_a : irgb(v->backdrop);
-    else                           rgb = vis_a ? rgb_a : vis_b ? rgb_b : irgb(v->backdrop);
+    } else {
+        uint32_t back = vsd_ext_on ? vsd_ext_rgb : irgb(v->backdrop);
+        if (v->plane_order & 1) rgb = vis_b ? rgb_b : vis_a ? rgb_a : back;
+        else                    rgb = vis_a ? rgb_a : vis_b ? rgb_b : back;
+    }
     return 0xFF000000u | rgb;
 }
 

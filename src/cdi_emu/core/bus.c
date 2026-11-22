@@ -14,6 +14,7 @@
  *   $80000000+      General I/O registers
  */
 
+#include "FMV/fmv.h"
 #include "bus.h"
 #include "rom_loader.h"
 #include "./GPU/scc66470.h"
@@ -150,6 +151,33 @@ static void cdic_dma(bus_t *b, uint16_t ctl)
     r[DMA_CCR] &= 0x7F;                       /* operation done */
     r[DMA_CSR] = (uint8_t)((r[DMA_CSR] | 0x80) & ~0x18);   /* COC, not active, no error */
     r[DMA_CER] = 0;
+}
+
+/* ===== Channel 2 ($80004040): memory -> Digital Video Cartridge =====
+ * fmvdrv ($E54546) and madriv send the MPEG packet payloads this way:
+ * CSR=$FF, MAR = buffer, MTC = words, OCR $30 (memory -> device, words),
+ * CCR $80 = start, then the chip's command register bit 15 raises its
+ * transfer request (fmv.c calls bus_dma2_transfer). The driver waits while
+ * CSR bit 3 (active) is set, then checks bit 4 (error). */
+static bus_t *dma2_bus = NULL;
+
+int bus_dma2_transfer(void (*sink)(uint16_t))
+{
+    uint8_t *r = &io_regs[DMA1 + 0x40];
+    if (!dma2_bus || !(r[DMA_CCR] & 0x80) || (r[DMA_OCR] & 0x80)) return -1;
+    uint32_t mtc = ((uint32_t)r[DMA_MTC] << 8) | r[DMA_MTC + 1];
+    uint32_t mar = ((uint32_t)r[DMA_MAR] << 24) | ((uint32_t)r[DMA_MAR + 1] << 16)
+                 | ((uint32_t)r[DMA_MAR + 2] << 8) | r[DMA_MAR + 3];
+    if (getenv("EMU_DMA_LOG"))
+        fprintf(stderr, "[DMA] mem->cartridge %u words from %06X (pc=%06X)\n", mtc, mar & 0xFFFFFF, bus_watch_pc);
+    for (uint32_t n = 0; n < mtc; n++, mar += 2) sink(bus_read16(dma2_bus, mar));
+    r[DMA_MAR] = (uint8_t)(mar >> 24); r[DMA_MAR + 1] = (uint8_t)(mar >> 16);
+    r[DMA_MAR + 2] = (uint8_t)(mar >> 8); r[DMA_MAR + 3] = (uint8_t)mar;
+    r[DMA_MTC] = r[DMA_MTC + 1] = 0;
+    r[DMA_CCR] &= 0x7F;
+    r[DMA_CSR] = (uint8_t)((r[DMA_CSR] | 0x80) & ~0x18);
+    r[DMA_CER] = 0;
+    return (int)mtc;
 }
 
 /* Accessor for uart.c to read/write the raw I/O shadow array */
@@ -450,6 +478,7 @@ uint8_t bus_read8(bus_t *b, uint32_t addr) {
     if (is_nvram(addr)) return b->nvram[nv_off(addr)];
     if (rtc_handles(addr)) return rtc_read8(&b->rtc, addr);
     if (is_rom(addr))   return b->rom[rom_off(addr)];
+    if (fmv_handles(addr)) return fmv_read8(addr);      /* Digital Video Cartridge */
 
     return io_read_stub(addr) & 0xFF;
 }
@@ -492,6 +521,8 @@ uint16_t bus_read16(bus_t *b, uint32_t addr) {
         return ((uint16_t)b->rom[o] << 8) | b->rom[o + 1];
     }
 
+    if (fmv_handles(addr)) return fmv_read16(addr);     /* Digital Video Cartridge */
+
     /* Fallback: assemble from two 8-bit reads (covers MMIO) */
     return ((uint16_t)bus_read8(b, addr) << 8) | bus_read8(b, addr + 1);
 }
@@ -532,6 +563,7 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
         if (is_dma_csr(addr)) { io_regs[addr - IO_BASE] &= (uint8_t)~v; return; }  /* write 1 to clear */
         if ((addr & 0xFFFF00) == 0x002000) { uart_write8(b, addr, v); return; }
         io_regs[addr - IO_BASE] = v;
+        if (addr == IO_BASE + DMA1 + 0x40 + DMA_CCR && (v & 0x80)) { dma2_bus = b; fmv_dma_started(); }
         return;
     }
 
@@ -544,6 +576,7 @@ void bus_write8(bus_t *b, uint32_t addr, uint8_t v) {
     }
     if (rtc_handles(addr)) { rtc_write8(&b->rtc, addr, v); nvram_touch(b); return; }
     if (is_rom(addr))   return;  /* ROM is read-only */
+    if (fmv_handles(addr)) { fmv_write8(addr, v); return; }
 
     io_write_stub(addr, v);
 }
@@ -590,6 +623,8 @@ void bus_write16(bus_t *b, uint32_t addr, uint16_t v) {
         }
         return;
     }
+
+    if (fmv_handles(addr)) { fmv_write16(addr, v); return; }   /* Digital Video Cartridge */
 
     /* Fallback: decompose into two 8-bit writes (covers CDIC, MMIO) */
     bus_write8(b, addr,     (uint8_t)(v >> 8));
