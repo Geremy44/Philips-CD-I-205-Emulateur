@@ -40,6 +40,7 @@
 static int log_w = 768;                /* 1024 in 16:9 */
 static int aspect_wide = 0;            /* menu Affichage / F2, options.ini */
 static int video_filter = 0;           /* menu Affichage / F4, options.ini */
+static int overscan_mask = 1;          /* edges hidden like a TV (see OVERSCAN_PX) */
 #define WIN_W   log_w
 #define WIN_H   576
 
@@ -80,6 +81,7 @@ void video_display_init(void)
     log_w = aspect_wide ? 1024 : 768;
     video_filter = option_get("filter", 0);
     if (video_filter < 0 || video_filter >= VIDEO_FILTERS) video_filter = 0;
+    overscan_mask = option_get("overscan", 1) ? 1 : 0;
     win = SDL_CreateWindow("CD-i 205 - Video Output",
                            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                            WIN_W, WIN_H,
@@ -119,6 +121,7 @@ void video_display_init(void)
     create_menu();
     input_map_init();                          /* keys / controllers, controles.ini */
     video_display_menu_check(VM_MOUSE, input_map_mouse_enabled());
+    video_display_menu_check(VM_PADS, input_map_pads_enabled());
     initialized = 1;
     fprintf(stderr, "[video_display] Window created (ID=%u, %dx%d)\n", window_id, WIN_W, WIN_H);
 }
@@ -145,7 +148,16 @@ void video_display_reset_vsd(void) { vsd_reset(&vsd); }
 
 void video_display_set_title(const char *title)
 {
-    if (win) SDL_SetWindowTitle(win, title ? title : "CD-i 205 - Video Output");
+    if (win) SDL_SetWindowTitle(win, title ? title : "CD-i 205");
+}
+
+/* Name of the loaded disc in the title ("" or NULL = no disc) */
+void video_display_set_disc_title(const char *disc)
+{
+    char t[300];
+    if (disc && *disc) snprintf(t, sizeof(t), "CD-i 205 - %s", disc);
+    else snprintf(t, sizeof(t), "CD-i 205 - pas de disque");
+    video_display_set_title(t);
 }
 
 void video_display_message(const char *title, const char *text)
@@ -218,6 +230,7 @@ static void create_menu(void)
     AppendMenuW(file, MF_STRING, VM_EJECT,     L"\u00c9jecter le disque");
     AppendMenuW(file, MF_STRING, VM_RESET,     L"R\u00e9initialiser le CD-i\tCtrl+R");
     AppendMenuW(file, MF_STRING, VM_IMPORT_ROM, L"Importer des ROM...");
+    AppendMenuW(file, MF_STRING, VM_CONVERT_CHD, L"Convertir une image CHD en BIN/CUE...");
     {   /* every CD / DVD / BD drive of the PC */
         char drives[26];
         int nd = cdrom_list_drives(drives, 26);
@@ -228,6 +241,17 @@ static void create_menu(void)
             AppendMenuW(file, MF_STRING, VM_DRIVE_PLAY + (drives[i] - 'A'), label);
             swprintf(label, 96, L"Extraire le disque du lecteur %c: en BIN/CUE...", drives[i]);
             AppendMenuW(file, MF_STRING, VM_DRIVE_RIP + (drives[i] - 'A'), label);
+            /* burning in its own submenu, simulation first and far from
+             * the real burn, which cannot be undone */
+            HMENU burn = CreatePopupMenu();
+            AppendMenuW(burn, MF_STRING, VM_DRIVE_BURN_TEST + (drives[i] - 'A'),
+                        L"Simulation (laser éteint, le disque reste vierge)...");
+            AppendMenuW(burn, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(burn, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(burn, MF_STRING, VM_DRIVE_BURN + (drives[i] - 'A'),
+                        L"GRAVER réellement sur un CD-R vierge (définitif)...");
+            swprintf(label, 96, L"Graver une image (lecteur %c:)", drives[i]);
+            AppendMenuW(file, MF_POPUP, (UINT_PTR)burn, label);
         }
     }
     AppendMenuW(file, MF_SEPARATOR, 0, NULL);
@@ -242,13 +266,17 @@ static void create_menu(void)
     AppendMenuW(view, MF_SEPARATOR, 0, NULL);
     AppendMenuW(view, MF_STRING, VM_ASPECT_43,  L"Format 4:3\tF2");
     AppendMenuW(view, MF_STRING, VM_ASPECT_169, L"Format 16:9 (\u00e9tir\u00e9)\tF2");
+    AppendMenuW(view, MF_STRING, VM_OVERSCAN,   L"Bords masqu\u00e9s (comme sur une t\u00e9l\u00e9)");
     AppendMenuW(view, MF_SEPARATOR, 0, NULL);
-    AppendMenuW(view, MF_STRING, VM_FILTER0 + 0, L"Filtre : aucun (net)\tF4");
-    AppendMenuW(view, MF_STRING, VM_FILTER0 + 1, L"Filtre : liss\u00e9");
-    AppendMenuW(view, MF_STRING, VM_FILTER0 + 2, L"Filtre : lignes de balayage");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 0, L"Filtre : aucun (pixels nets)\tF4");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 1, L"Filtre : liss\u00e9 (flou)");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 4, L"Filtre : liss\u00e9 net");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 5, L"Filtre : liss\u00e9 contours");
     AppendMenuW(view, MF_STRING, VM_FILTER0 + 3, L"Filtre : \u00e9cran cathodique");
+    AppendMenuW(view, MF_STRING, VM_FILTER0 + 2, L"Filtre : lignes de balayage");
     AppendMenuW(ctl,  MF_STRING, VM_INPUT_CONFIG, L"Assigner les touches...");
     AppendMenuW(ctl,  MF_STRING, VM_MOUSE,     L"Souris active");
+    AppendMenuW(ctl,  MF_STRING, VM_PADS,      L"Manettes actives (décoché : ignorées dès le démarrage)");
     AppendMenuW(ctl,  MF_SEPARATOR, 0, NULL);
     AppendMenuW(ctl,  MF_STRING, VM_SWAP,      L"Inverser clic gauche / droit\tF7");
     menu_bar = CreateMenu();
@@ -342,8 +370,129 @@ void video_display_toggle_host_cursor(void)
             hide_host_cursor ? "hidden" : "shown");
 }
 
+/* ---- progress window (disc ripping / burning) ----
+ * A small window owned by the video window, without close button: a line
+ * of text and a bar drawn here. Its messages are dispatched by SDL's own
+ * event pump (same thread), so it needs no loop of its own. */
+#ifdef _WIN32
+static HWND prog_wnd = NULL;
+static wchar_t prog_text[256];
+static int prog_pct = 0;
+
+static LRESULT CALLBACK prog_proc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    if (m == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(h, &ps);
+        RECT rc;
+        GetClientRect(h, &rc);
+        FillRect(dc, &rc, GetSysColorBrush(COLOR_BTNFACE));
+        HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT old = (HFONT)SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+        RECT tr = { 16, 12, rc.right - 16, 34 };
+        DrawTextW(dc, prog_text, -1, &tr, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        RECT bar = { 16, 40, rc.right - 16, 62 };            /* frame, then fill */
+        FillRect(dc, &bar, GetSysColorBrush(COLOR_WINDOW));
+        FrameRect(dc, &bar, GetSysColorBrush(COLOR_BTNSHADOW));
+        RECT fill = { bar.left + 2, bar.top + 2, bar.left + 2 + (bar.right - bar.left - 4) * prog_pct / 100, bar.bottom - 2 };
+        if (fill.right > fill.left) FillRect(dc, &fill, GetSysColorBrush(COLOR_HIGHLIGHT));
+        wchar_t pct[16];
+        swprintf(pct, 16, L"%d %%", prog_pct);
+        SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
+        RECT pr = { 16, 68, rc.right - 16, 88 };
+        DrawTextW(dc, pct, -1, &pr, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, old);
+        EndPaint(h, &ps);
+        return 0;
+    }
+    if (m == WM_ERASEBKGND) return 1;
+    if (m == WM_CLOSE) return 0;                            /* ends by itself */
+    return DefWindowProcW(h, m, w, l);
+}
+#endif
+
+void video_display_progress(const char *title, const char *text, int pct)
+{
+#ifdef _WIN32
+    if (pct < 0) {
+        if (prog_wnd) DestroyWindow(prog_wnd);
+        prog_wnd = NULL;
+        return;
+    }
+    if (pct > 100) pct = 100;
+    wchar_t wt[256];
+    MultiByteToWideChar(CP_UTF8, 0, text ? text : "", -1, wt, 256);
+    if (!prog_wnd) {
+        static int registered = 0;
+        HINSTANCE inst = GetModuleHandleW(NULL);
+        if (!registered) {
+            WNDCLASSW wc;
+            ZeroMemory(&wc, sizeof(wc));
+            wc.lpfnWndProc = prog_proc;
+            wc.hInstance = inst;
+            wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+            wc.lpszClassName = L"CDi205Progress";
+            RegisterClassW(&wc);
+            registered = 1;
+        }
+        if (win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP))
+            video_display_toggle_fullscreen();          /* the window must be visible */
+        SDL_SysWMinfo info;
+        SDL_VERSION(&info.version);
+        HWND owner = (win && SDL_GetWindowWMInfo(win, &info)) ? info.info.win.window : NULL;
+        wchar_t wtitle[128];
+        MultiByteToWideChar(CP_UTF8, 0, title ? title : "CD-i 205", -1, wtitle, 128);
+        DWORD style = WS_POPUP | WS_CAPTION;
+        RECT r = { 0, 0, 440, 96 };
+        AdjustWindowRect(&r, style, FALSE);
+        int w = r.right - r.left, h = r.bottom - r.top, x = CW_USEDEFAULT, y = CW_USEDEFAULT;
+        RECT o;
+        if (owner && GetWindowRect(owner, &o)) {           /* centred on the video */
+            x = (o.left + o.right - w) / 2;
+            y = (o.top + o.bottom - h) / 2;
+        }
+        prog_wnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"CDi205Progress", wtitle, style,
+                                   x, y, w, h, owner, NULL, inst, NULL);
+        if (!prog_wnd) return;
+        prog_text[0] = 0;
+        prog_pct = -1;
+        ShowWindow(prog_wnd, SW_SHOWNOACTIVATE);
+    }
+    if (pct != prog_pct || wcscmp(wt, prog_text)) {
+        prog_pct = pct;
+        wcscpy(prog_text, wt);
+        InvalidateRect(prog_wnd, NULL, FALSE);
+    }
+#else
+    (void)title; (void)text; (void)pct;
+#endif
+}
+
 /* File dialog to choose a disc image. Returns 1 and a UTF-8 path in out. */
 int video_display_choose_disc(char *out, int out_size)
+{
+    return video_display_choose_image(NULL, out, out_size);
+}
+
+int video_display_confirm(const char *title, const char *text, const char *yes)
+{
+    if (win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP))
+        video_display_toggle_fullscreen();       /* the box must be visible */
+    SDL_ShowCursor(SDL_ENABLE);
+    const SDL_MessageBoxButtonData buttons[2] = {
+        { SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Annuler" },
+        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, yes },
+    };
+    const SDL_MessageBoxData box = { SDL_MESSAGEBOX_WARNING, win, title, text, 2, buttons, NULL };
+    int id = 0;
+    if (SDL_ShowMessageBox(&box, &id) != 0) id = 0;
+    apply_host_cursor();
+    return id == 1;
+}
+
+int video_display_choose_image(const char *title, char *out, int out_size)
 {
 #ifdef _WIN32
     if (win && (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP))
@@ -357,17 +506,20 @@ int video_display_choose_disc(char *out, int out_size)
     ZeroMemory(&ofn, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"Images de disque CD-i (*.cue;*.bin;*.iso;*.img)\0*.cue;*.bin;*.iso;*.img\0Tous les fichiers\0*.*\0";
+    ofn.lpstrFilter = L"Images de disque CD-i (*.cue;*.bin;*.chd;*.iso;*.img)\0*.cue;*.bin;*.chd;*.iso;*.img\0"
+                      L"Images CHD (*.chd)\0*.chd\0Tous les fichiers\0*.*\0";
     ofn.lpstrFile = file;
     ofn.nMaxFile = 1024;
-    ofn.lpstrTitle = L"Ins\u00e9rer un disque dans le CD-i";
+    wchar_t wtitle[256] = L"Ins\u00e9rer un disque dans le CD-i";
+    if (title) MultiByteToWideChar(CP_UTF8, 0, title, -1, wtitle, 256);
+    ofn.lpstrTitle = wtitle;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     int ok = GetOpenFileNameW(&ofn);
     apply_host_cursor();
     if (!ok) return 0;
     return WideCharToMultiByte(CP_UTF8, 0, file, -1, out, out_size, NULL, NULL) > 0;
 #else
-    (void)out; (void)out_size;
+    (void)title; (void)out; (void)out_size;
     return 0;
 #endif
 }
@@ -436,11 +588,114 @@ int video_display_choose_files(const char *title, char ***out)
 static SDL_Texture *mask_tex = NULL, *vign_tex = NULL;
 
 static const char *const FILTER_NAMES[VIDEO_FILTERS] = {
-    "aucun", "liss\xC3\xA9", "lignes de balayage", "\xC3\xA9" "cran cathodique"
+    "aucun", "liss\xC3\xA9 (flou)", "lignes de balayage", "\xC3\xA9" "cran cathodique",
+    "liss\xC3\xA9 net", "liss\xC3\xA9 contours"
 };
+static const int FILTER_ORDER[VIDEO_FILTERS] = { 0, 1, 4, 5, 3, 2 };   /* menu / F4 order */
+
+void video_display_next_filter(void)
+{
+    int k = 0;
+    while (k < VIDEO_FILTERS && FILTER_ORDER[k] != video_filter) k++;
+    video_display_set_filter(FILTER_ORDER[(k + 1) % VIDEO_FILTERS]);
+}
+
+/* ---- Smoothing (CPU upscaling, then bilinear to the window) ----
+ * Plain bilinear from 240 lines to a 1080-line window blurs over 4 screen
+ * pixels. "Sharp": pixel replication by an integer factor first, so the
+ * final bilinear only softens a one-pixel seam. "Edges": EPX / Scale2x
+ * applied twice on the CD-i's own resolution (a 768-wide frame whose pixel
+ * pairs are all equal is 384 wide underneath): staircases and diagonals
+ * get rounded, flat areas and photos stay as they are. */
+#define HI_W (SCC_OUT_MAX_W * 2)
+#define HI_H (SCC_OUT_MAX_H * 4)
+static uint32_t *hi_buf = NULL, *hi_tmp = NULL;
+static SDL_Texture *hi_tex = NULL;
+
+/* EPX / Scale2x: src w x h -> dst 2w x 2h */
+static void scale2x(const uint32_t *src, int sp, int w, int h, uint32_t *dst, int dp)
+{
+    for (int y = 0; y < h; y++) {
+        const uint32_t *row = src + y * sp;
+        const uint32_t *up = y > 0 ? row - sp : row, *dn = y < h - 1 ? row + sp : row;
+        uint32_t *o0 = dst + (2 * y) * dp, *o1 = o0 + dp;
+        for (int x = 0; x < w; x++) {
+            uint32_t P = row[x], A = up[x], D = dn[x];
+            uint32_t C = x > 0 ? row[x - 1] : P, B = x < w - 1 ? row[x + 1] : P;
+            uint32_t e0 = P, e1 = P, e2 = P, e3 = P;
+            if (A != D && C != B) {
+                if (C == A) e0 = A;
+                if (A == B) e1 = B;
+                if (D == C) e2 = C;
+                if (B == D) e3 = D;
+            }
+            o0[2 * x] = e0; o0[2 * x + 1] = e1;
+            o1[2 * x] = e2; o1[2 * x + 1] = e3;
+        }
+    }
+}
+
+/* the frame as a hi-res picture for filters 4 and 5; returns 0 if not used */
+static int upscale_frame(const uint32_t *pix, int w, int h, int *ow, int *oh)
+{
+    if (video_filter != 4 && video_filter != 5) return 0;
+    if (!hi_buf) {
+        hi_buf = malloc((size_t)HI_W * HI_H * 4);
+        hi_tmp = malloc((size_t)HI_W * HI_H * 4);
+        if (!hi_buf || !hi_tmp) return 0;
+    }
+    if (!hi_tex) {
+        hi_tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, HI_W, HI_H);
+        if (!hi_tex) return 0;
+        SDL_SetTextureScaleMode(hi_tex, SDL_ScaleModeLinear);
+    }
+    if (w > SCC_OUT_MAX_W || h > SCC_OUT_MAX_H) return 0;
+    if (video_filter == 4) {                     /* x2 across, x4 down, replicated */
+        for (int y = 0; y < h; y++) {
+            const uint32_t *s = pix + y * SCC_OUT_MAX_W;
+            uint32_t *d = hi_buf + (4 * y) * HI_W;
+            for (int x = 0; x < w; x++) d[2 * x] = d[2 * x + 1] = s[x];
+            for (int k = 1; k < 4; k++) memcpy(d + k * HI_W, d, (size_t)w * 2 * 4);
+        }
+        *ow = 2 * w; *oh = 4 * h;
+        return 1;
+    }
+    /* edges: native width (pairs doubled?) -> x2 -> x2 */
+    int pairs = (w % 2) == 0;
+    for (int y = 0; y < h && pairs; y++) {
+        const uint32_t *s = pix + y * SCC_OUT_MAX_W;
+        for (int x = 0; x < w; x += 2) if (s[x] != s[x + 1]) { pairs = 0; break; }
+    }
+    int nw = pairs ? w / 2 : w;
+    static uint32_t native[SCC_OUT_MAX_W * SCC_OUT_MAX_H];
+    for (int y = 0; y < h; y++) {
+        const uint32_t *s = pix + y * SCC_OUT_MAX_W;
+        uint32_t *d = native + y * SCC_OUT_MAX_W;
+        if (pairs) for (int x = 0; x < nw; x++) d[x] = s[2 * x];
+        else memcpy(d, s, (size_t)w * 4);
+    }
+    scale2x(native, SCC_OUT_MAX_W, nw, h, hi_tmp, HI_W);              /* 2nw x 2h */
+    scale2x(hi_tmp, HI_W, 2 * nw, 2 * h, hi_buf, HI_W);               /* 4nw x 4h */
+    if (!pairs) {                       /* 768-wide content: 4x across is too wide, keep 2x */
+        for (int y = 0; y < 4 * h; y++) {
+            uint32_t *d = hi_buf + y * HI_W;
+            for (int x = 0; x < 2 * nw; x++) d[x] = d[2 * x];
+        }
+    }
+    *ow = 2 * w; *oh = 4 * h;
+    return 1;
+}
+
+/* Left / right edges hidden like a TV's overscan (menu Affichage,
+ * options.ini overscan=0|1, on by default). The 768-pixel modes fetch 384
+ * bytes per line whatever the game stores there: Inca's flight scenes keep
+ * 348-byte lines, so the last 20 pixels showed the start of the next line.
+ * On a TV that part is off screen. */
+#define OVERSCAN_PX 24                 /* in 768-pixel units, each side */
 
 static void update_view_menu(void)
 {
+    video_display_menu_check(VM_OVERSCAN, overscan_mask);
     video_display_menu_check(VM_ASPECT_43, !aspect_wide);
     video_display_menu_check(VM_ASPECT_169, aspect_wide);
     for (int i = 0; i < VIDEO_FILTERS; i++) video_display_menu_check(VM_FILTER0 + i, video_filter == i);
@@ -504,7 +759,7 @@ static void make_filter_textures(void)
 /* after the picture is copied: lines (h = CD-i lines shown) and mask */
 static void apply_filter(int h)
 {
-    if (video_filter >= 2 && h > 0) {           /* scanlines: lower 40 % of each line */
+    if ((video_filter == 2 || video_filter == 3) && h > 0) {           /* scanlines: lower 40 % of each line */
         SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(ren, 0, 0, 0, video_filter == 3 ? 110 : 90);
         for (int y = 0; y < h; y++) {
@@ -625,6 +880,17 @@ int video_display_handle_event(const void *ev)
                 video_display_menu_check(VM_MOUSE, input_map_mouse_enabled());
                 return 1;
             }
+            if (id == VM_OVERSCAN) {
+                overscan_mask = !overscan_mask;
+                option_set("overscan", overscan_mask);
+                update_view_menu();
+                return 1;
+            }
+            if (id == VM_PADS) {
+                input_map_set_pads(!input_map_pads_enabled());
+                video_display_menu_check(VM_PADS, input_map_pads_enabled());
+                return 1;
+            }
             menu_cb(id);
             return 1;
         }
@@ -633,6 +899,9 @@ int video_display_handle_event(const void *ev)
 #endif
     case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED:
     case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: case SDL_CONTROLLERAXISMOTION:
+    case SDL_JOYDEVICEADDED: case SDL_JOYDEVICEREMOVED:          /* plain joysticks too */
+    case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP: case SDL_JOYAXISMOTION: case SDL_JOYHATMOTION:
+    case SDL_JOYBALLMOTION:
         if (input_ui_is_open()) return input_ui_event(e);
         input_map_event(e, 0);          /* hot-plug; held state is read each frame */
         return 1;
@@ -737,6 +1006,8 @@ typedef struct {
     uint32_t bep[SCC_BEP_MAX];
 } log_state_t;
 
+static int video_log_frame = 0;       /* frames shown, for the logs */
+
 static void log_frame_changes(char plane, const scc66470_t *v, const scc_frame_t *f)
 {
     static log_state_t st[2] = { { 0xFFFF, 0xFFFF, 0xFFFFFFFFu, -1, {0} },
@@ -751,15 +1022,15 @@ static void log_frame_changes(char plane, const scc66470_t *v, const scc_frame_t
     if (!video_log_on()) return;
 
     if (v->dcr != last_dcr || v->dcr2 != last_dcr2 || f->vsr_start != last_vsr) {
-        fprintf(stderr, "[VIDEO %c] DE=%d DCR=%04X DCR2=%04X CSR=%04X ICA=%d insns "
+        fprintf(stderr, "[VIDEO %c] f%d DE=%d DCR=%04X DCR2=%04X CSR=%04X ICA=%d insns "
                         "-> start=%05X %dx%d\n",
-                plane, f->enabled, v->dcr, v->dcr2, v->csr_control, f->ica_count,
+                plane, video_log_frame, f->enabled, v->dcr, v->dcr2, v->csr_control, f->ica_count,
                 f->vsr_start, f->width, f->height);
         last_dcr = v->dcr; last_dcr2 = v->dcr2; last_vsr = f->vsr_start;
     }
     if (f->bep_count != last_bep_count ||
         memcmp(last_bep, f->bep, (size_t)f->bep_count * sizeof(uint32_t)) != 0) {
-        fprintf(stderr, "[VIDEO %c] BEP CONTROL x%d:", plane, f->bep_count);
+        fprintf(stderr, "[VIDEO %c] f%d BEP CONTROL x%d:", plane, video_log_frame, f->bep_count);
         for (int i = 0; i < f->bep_count; i++) fprintf(stderr, " %08X", f->bep[i]);
         fprintf(stderr, "\n");
         last_bep_count = f->bep_count;
@@ -785,13 +1056,19 @@ static void dump_frame_if_changed(int w, int h)
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++)
             hash = (hash ^ pixels[y * SCC_OUT_MAX_W + x]) * 16777619u;
-    if (hash == last_hash) return;
+    if (hash == last_hash && !getenv("EMU_VIDEO_DUMP_EVERY")) return;
     last_hash = hash;
 
-    /* a "%d" in the name numbers the frames (f%04d.bmp -> f0000.bmp, ...) */
-    static int frame_no = 0;
+    /* a "%d" in the name numbers the frames (f%04d.bmp -> f0000.bmp, ...);
+     * EMU_VIDEO_DUMP_EVERY=n: one picture every n frames, numbered by frame
+     * (timelines compared with a video of the real console) */
+    static int frame_no = 0, every = -1;
+    if (every < 0) every = getenv("EMU_VIDEO_DUMP_EVERY") ? atoi(getenv("EMU_VIDEO_DUMP_EVERY")) : 0;
     char name[600];
-    if (strstr(path, "%")) snprintf(name, sizeof(name), path, frame_no++);
+    if (every > 0) {
+        if (video_log_frame % every) return;
+        snprintf(name, sizeof(name), path, video_log_frame);
+    } else if (strstr(path, "%")) snprintf(name, sizeof(name), path, frame_no++);
     else                   snprintf(name, sizeof(name), "%s", path);
     FILE *fp = fopen(name, "wb");
     if (!fp) return;
@@ -828,8 +1105,43 @@ int video_display_update(void *scc66470, void *bus)
     /* Both VSCs share the 1 MB of DRAM (bank 1 / bank 2) and the timing */
     scc66470_render(v,  b->dram, (uint32_t)sizeof(b->dram), frame);
     scc66470_render(vb, b->dram, (uint32_t)sizeof(b->dram), frame_b);
+    video_log_frame++;
+    {   /* EMU_RAM_DUMP=prefix,f1,f2,...: write the whole DRAM to prefix_<frame>.bin
+         * at those frames (tests: find a game's variables) */
+        static int nd = -1, fr[32];
+        static char pre[512];
+        if (nd < 0) {
+            nd = 0;
+            const char *e = getenv("EMU_RAM_DUMP");
+            if (e) {
+                const char *c = strchr(e, ',');
+                if (c && c - e < (int)sizeof(pre)) {
+                    memcpy(pre, e, (size_t)(c - e)); pre[c - e] = 0;
+                    while (c && nd < 32) { fr[nd++] = atoi(c + 1); c = strchr(c + 1, ','); }
+                }
+            }
+        }
+        for (int k = 0; k < nd; k++)
+            if (fr[k] == video_log_frame) {
+                char name[600];
+                snprintf(name, sizeof(name), "%s_%05d.bin", pre, video_log_frame);
+                FILE *fp = fopen(name, "wb");
+                /* $000000 1 MB DRAM, then the $500000 bank (512 KB) */
+                if (fp) { fwrite(b->dram, 1, sizeof(b->dram), fp); fwrite(b->ram2, 1, sizeof(b->ram2), fp); fclose(fp); }
+            }
+    }
     log_frame_changes('A', v,  frame);
     log_frame_changes('B', vb, frame_b);
+    if (video_log_on()) {      /* where each plane's picture comes from (line 20) */
+        static uint32_t last_l[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu };
+        for (int pl = 0; pl < 2; pl++) {
+            uint32_t l = (pl ? frame_b : frame)->line_addr[20];
+            if (l != last_l[pl]) {
+                fprintf(stderr, "[VIDEO %c] f%d line20 @%05X\n", pl ? 'B' : 'A', video_log_frame, (unsigned)l);
+                last_l[pl] = l;
+            }
+        }
+    }
     /* EMU_VIDEO_LOG=2: also dump the ICA programs (non-BEP words) when the
      * display start changes */
     {
@@ -863,7 +1175,7 @@ int video_display_update(void *scc66470, void *bus)
      * ICA words apply before the frame, the DCA words from their line on
      * (games change the image contribution factors, CLUT, ... mid-screen). */
     int bep_ia = 0, bep_ib = 0;
-#define BEP_UPTO(row) do {         while (bep_ia < frame->bep_count && frame->bep_line[bep_ia] <= (row))             vsd_command(&vsd, frame->bep[bep_ia++]);         while (bep_ib < frame_b->bep_count && frame_b->bep_line[bep_ib] <= (row))             vsd_command(&vsd, frame_b->bep[bep_ib++]);     } while (0)
+#define BEP_UPTO(row) do {         while (bep_ia < frame->bep_count && frame->bep_line[bep_ia] <= (row))             vsd_command_plane(&vsd, frame->bep[bep_ia++], 0);         while (bep_ib < frame_b->bep_count && frame_b->bep_line[bep_ib] <= (row))             vsd_command_plane(&vsd, frame_b->bep[bep_ib++], 1);     } while (0)
     BEP_UPTO(-1);
 
     /* EMU_PLANE_LOG=1: every 50 frames, the most used pixel values of each
@@ -921,6 +1233,13 @@ int video_display_update(void *scc66470, void *bus)
                 if (target > 0 && nfr == target && y < 60)
                     fprintf(stderr, "[LINE] y%3d A %05X B %05X\n", y,
                             (unsigned)frame->line_addr[y], (unsigned)frame_b->line_addr[y]);
+                if (target > 0 && nfr == target && getenv("EMU_BLINE") && y == atoi(getenv("EMU_BLINE"))) {
+                    const bus_t *bb = b;                      /* raw bytes of that line, plane B */
+                    uint32_t a0 = frame_b->line_addr[y];
+                    fprintf(stderr, "[BLINE] y%d @%05X:", y, (unsigned)a0);
+                    for (int k = 0; k < 96; k++) fprintf(stderr, " %02X", bb->dram[(a0 + k) % sizeof(bb->dram)]);
+                    fprintf(stderr, "\n");
+                }
                 if (target > 0 && nfr == target) {
                     static uint32_t prev[16];
                     uint32_t cur[16];
@@ -946,6 +1265,13 @@ int video_display_update(void *scc66470, void *bus)
                                      b_on ? src_b[x] : 0, b_on, (dyuv_b && b_on) ? &line_b[x] : NULL);
             }
         }
+        if (overscan_mask) {                          /* before the cursor: it stays visible */
+            int m = OVERSCAN_PX * w / 768;
+            for (int y = 0; y < h; y++) {
+                uint32_t *row = &pixels[y * SCC_OUT_MAX_W];
+                for (int x = 0; x < m; x++) { row[x] = 0xFF000000u; row[w - 1 - x] = 0xFF000000u; }
+            }
+        }
         vsd_draw_cursor(&vsd, pixels, w, h, SCC_OUT_MAX_W);
     }
     BEP_UPTO(0x7FFF);                                 /* words past the last line */
@@ -962,8 +1288,15 @@ int video_display_update(void *scc66470, void *bus)
         int want = input_ui_is_open() ? 768 : log_w;
         if (want != cur_w) { cur_w = want; SDL_RenderSetLogicalSize(ren, want, WIN_H); }
     }
-    SDL_SetTextureScaleMode(tex, video_filter == 0 || video_filter == 2 ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
-    SDL_RenderCopy(ren, tex, &src_rect, NULL);    /* stretched to the 4:3 / 16:9 surface */
+    int hw, hh;
+    if (upscale_frame(pixels, w, h, &hw, &hh)) {  /* filters 4 / 5: CPU-upscaled first */
+        SDL_Rect hr = { 0, 0, hw, hh };
+        SDL_UpdateTexture(hi_tex, &hr, hi_buf, HI_W * (int)sizeof(uint32_t));
+        SDL_RenderCopy(ren, hi_tex, &hr, NULL);
+    } else {
+        SDL_SetTextureScaleMode(tex, video_filter == 0 || video_filter == 2 ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+        SDL_RenderCopy(ren, tex, &src_rect, NULL);    /* stretched to the 4:3 / 16:9 surface */
+    }
     apply_filter(h);
     input_ui_render(ren);                         /* assignment panel, if open */
     stats_count_frame();
@@ -975,7 +1308,10 @@ int video_display_update(void *scc66470, void *bus)
         if (!init) {
             init = 1;
             const char *e = getenv("EMU_STATS_SHOT");
-            if (e && sscanf(e, "%590[^,],%d", path, &at) == 2) stats_on = 1;
+            if (e && sscanf(e, "%590[^,],%d", path, &at) == 2) stats_on = !getenv("EMU_SHOT_NOSTATS");
+            const char *ws = getenv("EMU_WIN_SIZE");      /* WxH (tests) */
+            int ww, wh;
+            if (ws && sscanf(ws, "%dx%d", &ww, &wh) == 2) SDL_SetWindowSize(win, ww, wh);
         }
         if (at >= 0 && ++nf == at) {
             int ow, oh;

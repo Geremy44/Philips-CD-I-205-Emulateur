@@ -73,16 +73,15 @@ int input_ui_event(const SDL_Event *e)
         }
         if (e->type == SDL_MOUSEBUTTONDOWN) { cap_act = cap_slot = -1; return 1; }
         return e->type == SDL_KEYDOWN || e->type == SDL_KEYUP || e->type == SDL_MOUSEMOTION ||
-               e->type == SDL_MOUSEBUTTONUP || e->type == SDL_CONTROLLERBUTTONDOWN ||
-               e->type == SDL_CONTROLLERBUTTONUP || e->type == SDL_CONTROLLERAXISMOTION;
+               e->type == SDL_MOUSEBUTTONUP || input_map_is_pad_event(e);
     }
     input_map_event(e, 0);                        /* controller hot-plug */
+    if (input_map_is_pad_event(e)) return 1;
     switch (e->type) {
     case SDL_KEYDOWN:
         if (e->key.keysym.scancode == SDL_SCANCODE_ESCAPE) input_ui_close();
         return 1;
     case SDL_KEYUP: case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONUP:
-    case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: case SDL_CONTROLLERAXISMOTION:
         return 1;
     case SDL_MOUSEBUTTONDOWN: {
         int x = e->button.x, y = e->button.y;

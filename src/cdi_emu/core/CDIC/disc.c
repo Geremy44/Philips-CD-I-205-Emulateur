@@ -4,6 +4,7 @@
 
 #include "disc.h"
 #include "cdrom_win.h"
+#include "chd.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
@@ -127,10 +128,14 @@ static int open_cue(disc_t *d, const char *cue)
             d->track[cur].audio = !strncmp(mode, "AUDIO", 5);
             d->track[cur].file = d->nfiles - 1;
             d->track[cur].start = file_base;
+            d->track[cur].pregap = -1;
+            d->track[cur].cdi = !strncmp(mode, "CDI", 3);
             if (strstr(mode, "/2048")) sector = 2048;
         } else if (!strncmp(p, "INDEX", 5) && cur >= 0) {
             int idx, m, s, f;
-            if (sscanf(p + 5, "%d %d:%d:%d", &idx, &m, &s, &f) == 4 && idx == 1) {
+            if (sscanf(p + 5, "%d %d:%d:%d", &idx, &m, &s, &f) == 4 && idx == 0)
+                d->track[cur].pregap = file_base + (m * 60 + s) * 75 + f;
+            else if (sscanf(p + 5, "%d %d:%d:%d", &idx, &m, &s, &f) == 4 && idx == 1) {
                 int frames = (m * 60 + s) * 75 + f;
                 d->track[cur].start = file_base + frames;
                 d->track[cur].file_offset = (int64_t)frames * sector;
@@ -142,6 +147,8 @@ static int open_cue(disc_t *d, const char *cue)
     d->f = d->files[0];
     d->sector_size = sector;
     d->leadout = file_base + (int)(file_size(d->files[d->nfiles - 1]) / sector);
+    for (int i = 0; i < d->ntracks; i++)
+        if (d->track[i].pregap < 0 || d->track[i].pregap > d->track[i].start) d->track[i].pregap = d->track[i].start;
     /* "MODE2" track that is really CD-DA (no sync pattern): play it as audio */
     for (int i = 0; i < d->ntracks && sector == DISC_RAW; i++)
         if (!d->track[i].audio && !has_sync(d->files[d->track[i].file], d->track[i].file_offset)) {
@@ -173,9 +180,77 @@ static int open_drive(disc_t *d, char letter)
         d->track[i].number = toc.number[i];
         d->track[i].audio = toc.audio[i];
         d->track[i].start = toc.start[i];
+        d->track[i].pregap = toc.start[i];
     }
     d->leadout = toc.leadout;
     return 0;
+}
+
+static void header(uint8_t *s, int lba, int mode);
+
+/* MAME CHD image: tracks laid out one after the other from LBA 0, with
+ * their pregap (INDEX 00) when the CHD has one */
+static int open_chd(disc_t *d, const char *path)
+{
+    char err[300];
+    d->chd = chd_open(path, err, sizeof(err));
+    if (!d->chd) { fprintf(stderr, "[DISC] CHD: %s\n", err); return -1; }
+    int lba = 0, n = chd_ntracks(d->chd);
+    for (int i = 0; i < n && i < DISC_MAX_TRACKS; i++) {
+        const chd_track_t *c = chd_track(d->chd, i);
+        disc_track_t *t = &d->track[i];
+        int stored = c->pregap_stored ? c->pregap : 0;
+        t->number = i + 1;
+        t->audio = c->type == CHD_AUDIO;
+        t->cdi = 0;
+        t->chd_type = c->type;
+        if (i == 0) { t->pregap = 0; t->start = 0; }  /* track 1 pregap: before LBA 0 */
+        else { t->pregap = lba; t->start = lba + c->pregap; }
+        t->chd_base = c->first_frame + stored;          /* CHD frame of LBA start */
+        t->chd_lo = t->start - (i == 0 ? 0 : stored);
+        t->chd_hi = t->start + c->frames - stored;
+        lba = t->chd_hi + c->postgap;
+        d->ntracks = i + 1;
+    }
+    d->leadout = lba;
+    d->sector_size = DISC_RAW;
+    return d->ntracks > 0 ? 0 : -1;
+}
+
+/* One sector of a CHD image, as the 2352 raw bytes of the disc */
+static int read_chd(disc_t *d, int lba, uint8_t *out)
+{
+    int t = -1;
+    for (int i = 0; i < d->ntracks; i++) if (lba >= d->track[i].pregap) t = i;
+    if (t < 0) return -1;
+    const disc_track_t *k = &d->track[t];
+    if (lba < k->chd_lo || lba >= k->chd_hi) {        /* pregap not in the image */
+        if (!k->audio) header(out, lba, k->chd_type == CHD_MODE1 || k->chd_type == CHD_MODE1_RAW ? 1 : 2);
+        return t;
+    }
+    uint8_t f[CHD_FRAME];
+    if (chd_read_frame(d->chd, k->chd_base + (lba - k->start), f) != 0) { header(out, lba, 2); return -1; }
+    switch (k->chd_type) {
+    case CHD_AUDIO:                                    /* stored big-endian */
+        for (int i = 0; i < DISC_RAW; i += 2) { out[i] = f[i + 1]; out[i + 1] = f[i]; }
+        break;
+    case CHD_MODE1_RAW: case CHD_MODE2_RAW:
+        memcpy(out, f, DISC_RAW);
+        break;
+    case CHD_MODE1:
+        header(out, lba, 1); memcpy(out + 16, f, 2048);
+        break;
+    case CHD_MODE2:
+        header(out, lba, 2); memcpy(out + 16, f, 2336);
+        break;
+    case CHD_MODE2_FORM1:
+        header(out, lba, 2); memcpy(out + 24, f, 2048);
+        break;
+    case CHD_MODE2_FORM2:
+        header(out, lba, 2); out[18] = out[22] = 0x20; memcpy(out + 24, f, 2324);
+        break;
+    }
+    return t;
 }
 
 int disc_open(disc_t *d, const char *path)
@@ -186,9 +261,10 @@ int disc_open(disc_t *d, const char *path)
     if (!strncmp(path, "cdrom:", 6) && path[6]) r = open_drive(d, path[6]);
     else if (ext_is(path, "cue")) r = open_cue(d, path);
     else if (ext_is(path, "iso")) r = open_plain(d, path, 2048);
+    else if (ext_is(path, "chd")) r = open_chd(d, path);
     else                          r = open_plain(d, path, DISC_RAW);
     if (r != 0) { disc_close(d); memset(d, 0, sizeof(*d)); return -1; }
-    if (!d->drive && !ext_is(path, "cue") && d->sector_size == DISC_RAW && !has_sync(d->f, 0)) {
+    if (!d->drive && !d->chd && !ext_is(path, "cue") && d->sector_size == DISC_RAW && !has_sync(d->f, 0)) {
         d->track[0].audio = 1;                       /* raw .bin of an audio CD */
         fprintf(stderr, "[DISC] no CD-ROM sync: audio CD image (one track)\n");
     }
@@ -209,12 +285,14 @@ void disc_close(disc_t *d)
     d->f = NULL;
     if (d->drive) cdrom_close(d->drive);
     d->drive = NULL;
+    if (d->chd) chd_close(d->chd);
+    d->chd = NULL;
     free(d->cache);
     d->cache = NULL;
     d->ntracks = 0;
 }
 
-int disc_present(const disc_t *d) { return d->f != NULL || d->drive != NULL; }
+int disc_present(const disc_t *d) { return d->f != NULL || d->drive != NULL || d->chd != NULL; }
 
 int disc_track_of(const disc_t *d, int lba)
 {
@@ -240,6 +318,7 @@ int disc_read(disc_t *d, int lba, uint8_t out[DISC_RAW])
         header(out, lba, 2);                          /* empty mode 2 sector */
         return -1;
     }
+    if (d->chd) return read_chd(d, lba, out);
     if (d->drive) {                                   /* physical drive, read ahead */
         if (lba < d->cache_lba || lba >= d->cache_lba + d->cache_n) {
             int n = d->leadout - lba < DRIVE_CACHE ? d->leadout - lba : DRIVE_CACHE;
@@ -276,3 +355,89 @@ int disc_read(disc_t *d, int lba, uint8_t out[DISC_RAW])
     }
     return t;
 }
+
+/* Disc name for the window title: volume identifier of the CD-i disc label
+ * or of the ISO 9660 descriptor (sector 16), else the image file name */
+void disc_title(disc_t *d, char *out, int n)
+{
+    uint8_t s[DISC_RAW];
+    out[0] = 0;
+    if (!disc_present(d)) return;
+    if (d->ntracks > 0 && !d->track[0].audio && disc_read(d, d->track[0].start + 16, s) >= 0) {
+        const uint8_t *u = s + (s[15] == 1 ? 16 : 24);
+        if ((u[0] == 1 && !memcmp(u + 1, "CD-I ", 5)) || (u[0] == 1 && !memcmp(u + 1, "CD001", 5))) {
+            int len = 32, k = 0, lower = 1;
+            while (len > 0 && (u[40 + len - 1] == ' ' || u[40 + len - 1] == 0)) len--;
+            for (int i = 0; i < len && k < n - 1; i++) {
+                char c = (char)u[40 + i];
+                if (c == '_') c = ' ';
+                if (c < 32 || c > 126) continue;
+                if (isupper((unsigned char)c)) lower = 0;
+                out[k++] = c;
+            }
+            out[k] = 0;
+            if (k && lower) out[0] = (char)toupper((unsigned char)out[0]);   /* "asterix" */
+            if (k) return;
+        }
+    }
+    if (d->drive) {
+        snprintf(out, n, "%s du lecteur %c:", d->track[0].audio ? "CD audio" : "Disque", d->path[6]);
+        return;
+    }
+    const char *b = d->path;                          /* file name without folder / extension */
+    for (const char *p = d->path; *p; p++) if (*p == '/' || *p == 92) b = p + 1;   /* 92 = backslash */
+    snprintf(out, n, "%s", b);
+    char *dot = strrchr(out, '.');
+    if (dot && dot != out) *dot = 0;
+    for (char *p = out; *p; p++) if (*p == '_') *p = ' ';
+    if (d->ntracks > 0 && d->track[0].audio) {
+        char t[300];
+        snprintf(t, sizeof(t), "CD audio - %s", out);
+        snprintf(out, n, "%s", t);
+    }
+}
+
+/* .bin + .cue of any open image (used to convert a CHD). Track 1 starts at
+ * the beginning of the .bin; the pregaps of the next tracks are written
+ * (INDEX 00) so that every track keeps its place on the disc. */
+int disc_write_bincue(disc_t *d, const char *bin, const char *cue, volatile long *progress, char *err, int n)
+{
+    if (!disc_present(d) || d->leadout <= 0) { snprintf(err, n, "Aucune image ouverte."); return -1; }
+    FILE *b = fopen_u8(bin, "wb");
+    if (!b) { snprintf(err, n, "Impossible de cr\xC3\xA9" "er :\n%s", bin); return -1; }
+    uint8_t *buf = malloc((size_t)64 * DISC_RAW);
+    if (!buf) { fclose(b); snprintf(err, n, "M\xC3\xA9moire insuffisante."); return -1; }
+    int bad = 0;
+    for (int lba = 0; lba < d->leadout; ) {
+        int k = d->leadout - lba < 64 ? d->leadout - lba : 64;
+        for (int i = 0; i < k; i++)
+            if (disc_read(d, lba + i, buf + (size_t)i * DISC_RAW) < 0) bad++;
+        if (fwrite(buf, DISC_RAW, (size_t)k, b) != (size_t)k) {
+            free(buf); fclose(b);
+            snprintf(err, n, "\xC3\x89" "criture impossible (disque plein ?) :\n%s", bin);
+            return -1;
+        }
+        lba += k;
+        if (progress) *progress = (long)((int64_t)lba * 100 / d->leadout);
+    }
+    free(buf);
+    if (fclose(b) != 0) { snprintf(err, n, "\xC3\x89" "criture impossible :\n%s", bin); return -1; }
+    FILE *c = fopen_u8(cue, "wb");
+    if (!c) { snprintf(err, n, "Impossible de cr\xC3\xA9" "er :\n%s", cue); return -1; }
+    const char *base = bin;
+    for (const char *p = bin; *p; p++) if (*p == '/' || *p == 92) base = p + 1;   /* 92 = backslash */
+    fprintf(c, "FILE \"%s\" BINARY\r\n", base);
+    for (int i = 0; i < d->ntracks; i++) {
+        const disc_track_t *t = &d->track[i];
+        const char *mode = t->audio ? "AUDIO"
+                         : (d->chd && (t->chd_type == CHD_MODE1 || t->chd_type == CHD_MODE1_RAW)) ? "MODE1/2352" : "MODE2/2352";
+        fprintf(c, "  TRACK %02d %s\r\n", i + 1, mode);
+        if (i > 0 && t->pregap < t->start)
+            fprintf(c, "    INDEX 00 %02d:%02d:%02d\r\n", t->pregap / 4500, t->pregap / 75 % 60, t->pregap % 75);
+        fprintf(c, "    INDEX 01 %02d:%02d:%02d\r\n", t->start / 4500, t->start / 75 % 60, t->start % 75);
+    }
+    fclose(c);
+    if (bad) { snprintf(err, n, "%d secteurs illisibles (remplis de z\xC3\xA9ros).", bad); return 1; }
+    return 0;
+}
+

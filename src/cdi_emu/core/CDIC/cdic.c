@@ -223,6 +223,13 @@ static void deliver_sector(cdic_t *c)
         if ((sm & SM_AUDIO) && (sm & SM_FORM2) && (c->audio_channel & (1u << chan))) {
             int abuf = 4 | c->abuffer;
             memcpy(c->ram + abuf * 0xA00, raw + 12, 0x924);
+            /* The sector's header + subheader also land in the free data
+             * buffer (no interrupt): for an audio buffer, cdapdriv takes the
+             * current disc address from data buffer 0 or 1 (whichever
+             * changed, $1A948E) and makes the file position from it. Without
+             * it the position stays frozen during an audio-only play and
+             * Hotel Mario's menu, which waits for it to move, hangs. */
+            memcpy(c->ram + c->buffer * 0xA00, raw + 12, 12);
             uint8_t q[12];
             q_program(c, lba, t, q);
             put_q(c, abuf, q);
@@ -239,7 +246,11 @@ static void deliver_sector(cdic_t *c)
                           lba, chan, raw[19], abuf, c->audio_sectors);
             return;
         }
-        if (!(c->channel & (1u << chan)))
+        /* A trigger sector ($10) reaches the driver whatever its channel:
+         * cdapdriv signals the application. Hotel Mario's intro changes
+         * scene on the empty channel 0 triggers of its stream (mask $8000);
+         * dropped, the backgrounds came late and then stopped changing. */
+        if (!(c->channel & (1u << chan)) && !(sm & 0x10))
             return;
     }
 
@@ -430,7 +441,7 @@ void cdic_write16(cdic_t *c, uint32_t addr, uint16_t v)
         if (v & DBUF_START)
             start_command(c);
         else if (!(v & DBUF_IRQ_EN)) {
-            if (c->busy) cdic_logf(c, "stop (DBUF=%04X) after %ld sectors\n", v, c->delivered);
+            if (c->busy) cdic_logf(c, "stop (DBUF=%04X) at LBA %d after %ld sectors\n", v, c->lba, c->delivered);
             c->busy = 0;
             c->oneshot = 0;
         }

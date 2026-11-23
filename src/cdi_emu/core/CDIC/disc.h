@@ -8,6 +8,7 @@
  *                CD-DA (badly ripped audio CDs) and is played as audio
  *   .bin / .img  raw 2352-byte sectors, a single CD-i (mode 2) track
  *   .iso         cooked 2048-byte mode 1 sectors (header synthesized)
+ *   .chd         MAME compressed CD image, version 5 (chd.c)
  *   cdrom:X      the disc in the PC's drive X: (raw sectors, cdrom_win.c)
  *
  * Addresses are LBAs: LBA 0 = absolute time 00:02:00.
@@ -26,8 +27,13 @@ typedef struct {
     int     number;        /* 1..99 */
     int     audio;         /* 1 = CD-DA track */
     int     start;         /* LBA of INDEX 01 */
+    int     pregap;        /* LBA of INDEX 00 (= start if none) */
+    int     cdi;           /* .cue says CDI/2352 */
     int     file;          /* index in disc_t.files */
     int64_t file_offset;   /* byte offset of that sector in its file */
+    int     chd_type;      /* CHD image: CHD_* sector layout */
+    int     chd_base;      /* CHD frame of LBA 'start' */
+    int     chd_lo, chd_hi;/* LBAs stored in the CHD: [chd_lo, chd_hi) */
 } disc_track_t;
 
 typedef struct {
@@ -40,6 +46,7 @@ typedef struct {
     int          leadout;        /* LBA of the lead-out */
     char         path[1100];
     struct cdrom *drive;         /* physical drive ("cdrom:F"), else NULL */
+    struct chd   *chd;           /* MAME CHD image (chd.c), else NULL */
     uint8_t     *cache;          /* drive read-ahead */
     int          cache_lba, cache_n;
 } disc_t;
@@ -48,6 +55,9 @@ typedef struct {
 int  disc_open(disc_t *d, const char *path);
 void disc_close(disc_t *d);
 int  disc_present(const disc_t *d);
+/* Write the image as .bin + .cue (CHD -> BIN/CUE converter). progress gets
+ * 0..100 (may be NULL). 0 = ok, else reason in err. */
+int  disc_write_bincue(disc_t *d, const char *bin, const char *cue, volatile long *progress, char *err, int n);
 
 /* Read one raw 2352-byte sector. Outside the image: an empty mode 2
  * sector with a valid header. Returns the track index (0-based) or -1. */
@@ -61,5 +71,8 @@ uint8_t disc_bcd(int v);
 int     disc_unbcd(uint8_t v);
 void    disc_lba_to_msf(int lba, uint8_t msf[3]);   /* BCD */
 int     disc_msf_to_lba(uint8_t m, uint8_t s, uint8_t f);
+
+/* Disc name (volume identifier, else file name); "" when no disc */
+void    disc_title(disc_t *d, char *out, int n);
 
 #endif /* DISC_H */

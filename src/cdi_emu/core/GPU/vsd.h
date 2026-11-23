@@ -41,6 +41,8 @@ typedef struct vsd {
 
 void     vsd_reset(vsd_t *v);
 void     vsd_command(vsd_t *v, uint32_t word);
+/* Same, from plane A (0) or B (1): per-plane registers only from their plane */
+void     vsd_command_plane(vsd_t *v, uint32_t word, int plane_b);
 
 /* Combine plane A (master VSC, V7..V0) and plane B (slave VSC, V15..V8)
  * pixel values into ARGB8888. a_on / b_on: that VSC is displaying (DE). */

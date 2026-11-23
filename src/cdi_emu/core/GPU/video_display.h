@@ -51,16 +51,17 @@ int video_display_handle_event(const void *sdl_event);
 /* Switch between window and full screen (F11, Alt+Enter) */
 void video_display_toggle_fullscreen(void);
 
-/* F3: statistics overlay. The emulator gives the text (lines separated by
- * '
-'); the display adds its own measured frame rate. */
+/* F3: statistics overlay. The emulator gives the text (one line per
+ * newline); the display adds its own measured frame rate. */
 /* Picture format: 0 = 4:3, 1 = 16:9 (stretched); saved in options.ini */
 void video_display_set_aspect(int wide);
 int  video_display_aspect_wide(void);
 
-/* Video filter (0 none, 1 smooth, 2 scanlines, 3 CRT); saved in options.ini */
-#define VIDEO_FILTERS 4
+/* Video filter, saved in options.ini:
+ * 0 none, 1 smooth (bilinear), 2 scanlines, 3 CRT, 4 sharp smooth, 5 edge smooth */
+#define VIDEO_FILTERS 6
 void video_display_set_filter(int f);
+void video_display_next_filter(void);     /* F4: in menu order */
 int  video_display_filter(void);
 const char *video_display_filter_name(void);
 
@@ -86,6 +87,11 @@ void video_display_reset_vsd(void);
 
 /* Window title (NULL = the normal one) and a message box */
 void video_display_set_title(const char *title);
+/* "CD-i 205 - <name of the loaded disc>" ("" or NULL = no disc) */
+void video_display_set_disc_title(const char *disc);
+/* Progress window with a bar (ripping, burning): created on the first call,
+ * updated by the next ones, closed with pct < 0. Text in UTF-8. */
+void video_display_progress(const char *title, const char *text, int pct);
 void video_display_message(const char *title, const char *text);
 /* Multi-selection file dialog (ROM dumps). Returns the number of files and
  * a malloc'd array of malloc'd UTF-8 paths in *out (0 if cancelled or not
@@ -98,14 +104,17 @@ void video_display_restore_host_cursor(void);
  * command id; video_display_menu_check() sets an item's check mark. */
 enum {
     VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT, VM_RESET,
-    VM_IMPORT_ROM,
+    VM_IMPORT_ROM, VM_CONVERT_CHD,
     VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
-    VM_ASPECT_43, VM_ASPECT_169, VM_FILTER0, /* VM_FILTER0 + 0..3 */
-    VM_FILTER_LAST = VM_FILTER0 + 3,
-    VM_SWAP = 1201, VM_INPUT_CONFIG, VM_MOUSE,
+    VM_ASPECT_43, VM_ASPECT_169, VM_FILTER0, /* VM_FILTER0 + 0..5 */
+    VM_FILTER_LAST = VM_FILTER0 + 5,
+    VM_OVERSCAN,             /* Affichage > edges hidden like a TV */
+    VM_SWAP = 1201, VM_INPUT_CONFIG, VM_MOUSE, VM_PADS,
     VM_FMV = 1401,           /* Materiel > Digital Video Cartridge */
     VM_DRIVE_PLAY = 1300,    /* + drive letter - 'A': play the disc in it */
-    VM_DRIVE_RIP  = 1330     /* + drive letter - 'A': rip it to .bin / .cue */
+    VM_DRIVE_RIP  = 1330,    /* + drive letter - 'A': rip it to .bin / .cue */
+    VM_DRIVE_BURN = 1500,    /* + drive letter - 'A': burn an image on it */
+    VM_DRIVE_BURN_TEST = 1530 /* + drive letter - 'A': same, test write */
 };
 typedef void (*video_menu_cb)(int id);
 void video_display_set_menu_cb(video_menu_cb cb);
@@ -113,5 +122,9 @@ void video_display_menu_check(int id, int on);
 
 /* Windows file dialog for a disc image; 1 + UTF-8 path in out if chosen */
 int  video_display_choose_disc(char *out, int out_size);
+/* Same with another dialog title (UTF-8) */
+int  video_display_choose_image(const char *title, char *out, int out_size);
+/* Yes / No box; 1 = yes */
+int  video_display_confirm(const char *title, const char *text, const char *yes);
 
 #endif /* VIDEO_DISPLAY_H */

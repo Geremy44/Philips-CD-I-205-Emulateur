@@ -3,7 +3,9 @@
  *
  *   fmv=0|1      Digital Video Cartridge (menu Materiel)
  *   aspect=0|1   picture format: 0 = 4:3, 1 = 16:9 (menu Affichage, F2)
- *   filter=0..3  video filter: 0 none, 1 smooth, 2 scanlines, 3 CRT (F4)
+ *   filter=0..5  video filter: 0 none, 1 smooth, 2 scanlines, 3 CRT,
+ *                4 sharp smooth, 5 edge smooth (F4)
+ *   pads=0|1     controllers on / off (menu Controles)
  */
 
 #ifndef OPTIONS_H

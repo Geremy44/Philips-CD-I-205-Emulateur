@@ -3,6 +3,7 @@
  */
 
 #include "input_map.h"
+#include "options.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,9 @@ static char ini_path[1100];
 
 #define MAX_PADS 4
 static SDL_GameController *pads[MAX_PADS];
+static SDL_Joystick *joys[MAX_PADS];          /* joysticks unknown to SDL's controller list */
+
+static const char *HAT_DIR[4] = { "haut", "bas", "gauche", "droite" };
 
 static const char *ACT_NAME[ACT_COUNT] = {
     "Haut", "Bas", "Gauche", "Droite", "Bouton 1", "Bouton 2", "Rapide"
@@ -78,6 +82,15 @@ static const char *pad_axis_name(int a, int pos)
 void input_map_code_name(int code, char *buf, int n)
 {
     if (code <= 0) { snprintf(buf, n, "-"); return; }
+    if (code >= IM_JOY_HAT && code < IM_JOY_END) {
+        snprintf(buf, n, "Croix %d %s", (code - IM_JOY_HAT) / 4 + 1, HAT_DIR[(code - IM_JOY_HAT) & 3]);
+        return;
+    }
+    if (code >= IM_JOY_AXIS && code < IM_JOY_HAT) {
+        snprintf(buf, n, "Axe %d %c", (code - IM_JOY_AXIS) / 2 + 1, ((code - IM_JOY_AXIS) & 1) ? '+' : '-');
+        return;
+    }
+    if (code >= IM_JOY_BUTTON && code < IM_JOY_AXIS) { snprintf(buf, n, "Bouton %d", code - IM_JOY_BUTTON + 1); return; }
     if (code < IM_PAD_BUTTON) {
         const char *s = SDL_GetScancodeName((SDL_Scancode)code);
         snprintf(buf, n, "%s", (s && *s) ? s : "?");
@@ -93,6 +106,11 @@ void input_map_code_name(int code, char *buf, int n)
 static void code_to_ini(int code, char *buf, int n)
 {
     if (code <= 0) snprintf(buf, n, "-");
+    else if (code >= IM_JOY_HAT && code < IM_JOY_END)
+        snprintf(buf, n, "jhat:%d%s", (code - IM_JOY_HAT) / 4, HAT_DIR[(code - IM_JOY_HAT) & 3]);
+    else if (code >= IM_JOY_AXIS && code < IM_JOY_HAT)
+        snprintf(buf, n, "jaxis:%d%c", (code - IM_JOY_AXIS) / 2, ((code - IM_JOY_AXIS) & 1) ? '+' : '-');
+    else if (code >= IM_JOY_BUTTON && code < IM_JOY_AXIS) snprintf(buf, n, "joy:%d", code - IM_JOY_BUTTON);
     else if (code < IM_PAD_BUTTON) snprintf(buf, n, "key:%s", SDL_GetScancodeName((SDL_Scancode)code));
     else if (code < IM_PAD_AXIS) {
         const char *s = SDL_GameControllerGetStringForButton((SDL_GameControllerButton)(code - IM_PAD_BUTTON));
@@ -108,6 +126,21 @@ static int ini_to_code(const char *v)
     if (!strncmp(v, "key:", 4)) {
         SDL_Scancode s = SDL_GetScancodeFromName(v + 4);
         return s != SDL_SCANCODE_UNKNOWN ? (int)s : 0;
+    }
+    if (!strncmp(v, "joy:", 4)) {
+        int b = atoi(v + 4);
+        return (b >= 0 && b < IM_JOY_AXIS - IM_JOY_BUTTON) ? IM_JOY_BUTTON + b : 0;
+    }
+    if (!strncmp(v, "jaxis:", 6)) {
+        int a = atoi(v + 6);
+        size_t l = strlen(v);
+        return (a >= 0 && a < 50 && l > 6) ? IM_JOY_AXIS + 2 * a + (v[l - 1] == '+') : 0;
+    }
+    if (!strncmp(v, "jhat:", 5)) {
+        int h = atoi(v + 5);
+        for (int d = 0; d < 4; d++)
+            if (strstr(v + 5, HAT_DIR[d]) && h >= 0 && h < 25) return IM_JOY_HAT + 4 * h + d;
+        return 0;
     }
     if (!strncmp(v, "pad:", 4)) {
         SDL_GameControllerButton b = SDL_GameControllerGetButtonFromString(v + 4);
@@ -191,13 +224,50 @@ void input_map_set_mouse(int on) { mouse_on = on != 0; save(); }
 
 static void open_pad(int index)
 {
-    if (!SDL_IsGameController(index)) return;
+    if (!SDL_IsGameController(index)) {             /* plain joystick */
+        SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(index);
+        for (int i = 0; i < MAX_PADS; i++)
+            if (joys[i] && SDL_JoystickInstanceID(joys[i]) == id) return;   /* already open */
+        for (int i = 0; i < MAX_PADS; i++)
+            if (!joys[i]) {
+                joys[i] = SDL_JoystickOpen(index);
+                if (joys[i]) fprintf(stderr, "[INPUT] joystick: %s (%d axes, %d buttons, %d hats)\n",
+                                     SDL_JoystickName(joys[i]), SDL_JoystickNumAxes(joys[i]),
+                                     SDL_JoystickNumButtons(joys[i]), SDL_JoystickNumHats(joys[i]));
+                return;
+            }
+        return;
+    }
+    SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(index);
+    for (int i = 0; i < MAX_PADS; i++)
+        if (pads[i] && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(pads[i])) == id) return;
     for (int i = 0; i < MAX_PADS; i++)
         if (!pads[i]) {
             pads[i] = SDL_GameControllerOpen(index);
             if (pads[i]) fprintf(stderr, "[INPUT] controller: %s\n", SDL_GameControllerName(pads[i]));
             return;
         }
+}
+
+/* Events of a plain joystick (not of a controller, which sends both) */
+static int is_plain_joy(SDL_JoystickID id)
+{
+    for (int i = 0; i < MAX_PADS; i++)
+        if (joys[i] && SDL_JoystickInstanceID(joys[i]) == id) return 1;
+    return 0;
+}
+
+int input_map_is_pad_event(const SDL_Event *e)
+{
+    switch (e->type) {
+    case SDL_CONTROLLERDEVICEADDED: case SDL_CONTROLLERDEVICEREMOVED:
+    case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: case SDL_CONTROLLERAXISMOTION:
+    case SDL_JOYDEVICEADDED: case SDL_JOYDEVICEREMOVED:
+    case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP: case SDL_JOYAXISMOTION: case SDL_JOYHATMOTION:
+    case SDL_JOYBALLMOTION:
+        return 1;
+    }
+    return 0;
 }
 
 void input_map_init(void)
@@ -207,8 +277,30 @@ void input_map_init(void)
     snprintf(ini_path, sizeof(ini_path), "%scontroles.ini", base ? base : "");
     SDL_free(base);
     load();
-    if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0)
-        for (int i = 0; i < SDL_NumJoysticks(); i++) open_pad(i);
+    if (option_get("pads", 1)) input_map_set_pads(1);
+    else fprintf(stderr, "[INPUT] controllers off (Controles menu)\n");
+}
+
+/* Controllers on / off (Controles menu, options.ini pads=0|1): off, SDL's
+ * controller code is not even started, so a misbehaving pad cannot block */
+static int pads_on = 0;
+int input_map_pads_enabled(void) { return pads_on; }
+void input_map_set_pads(int on)
+{
+    on = on != 0;
+    if (option_get("pads", 1) != on) option_set("pads", on);
+    if (on == pads_on) return;
+    pads_on = on;
+    if (on) {
+        if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) == 0)
+            for (int i = 0; i < SDL_NumJoysticks(); i++) open_pad(i);
+    } else {
+        for (int i = 0; i < MAX_PADS; i++) {
+            if (pads[i]) { SDL_GameControllerClose(pads[i]); pads[i] = NULL; }
+            if (joys[i]) { SDL_JoystickClose(joys[i]); joys[i] = NULL; }
+        }
+        SDL_QuitSubSystem(SDL_INIT_GAMECONTROLLER);
+    }
 }
 
 #define AXIS_PRESS 16000             /* a stick / trigger counts as pressed */
@@ -225,6 +317,30 @@ int input_map_event(const SDL_Event *e, int capture)
                 SDL_GameControllerClose(pads[i]);
                 pads[i] = NULL;
             }
+        return 0;
+    case SDL_JOYDEVICEADDED:
+        if (pads_on) open_pad(e->jdevice.which);
+        return 0;
+    case SDL_JOYDEVICEREMOVED:
+        for (int i = 0; i < MAX_PADS; i++)
+            if (joys[i] && SDL_JoystickInstanceID(joys[i]) == e->jdevice.which) {
+                SDL_JoystickClose(joys[i]);
+                joys[i] = NULL;
+            }
+        return 0;
+    case SDL_JOYBUTTONDOWN:
+        return (capture && is_plain_joy(e->jbutton.which) && e->jbutton.button < IM_JOY_AXIS - IM_JOY_BUTTON)
+               ? IM_JOY_BUTTON + e->jbutton.button : 0;
+    case SDL_JOYAXISMOTION:
+        if (capture && is_plain_joy(e->jaxis.which) && e->jaxis.axis < 50 &&
+            (e->jaxis.value > AXIS_PRESS || e->jaxis.value < -AXIS_PRESS))
+            return IM_JOY_AXIS + 2 * e->jaxis.axis + (e->jaxis.value > 0);
+        return 0;
+    case SDL_JOYHATMOTION:
+        if (capture && is_plain_joy(e->jhat.which) && e->jhat.hat < 25 && e->jhat.value != SDL_HAT_CENTERED) {
+            int d = (e->jhat.value & SDL_HAT_UP) ? 0 : (e->jhat.value & SDL_HAT_DOWN) ? 1 : (e->jhat.value & SDL_HAT_LEFT) ? 2 : 3;
+            return IM_JOY_HAT + 4 * e->jhat.hat + d;
+        }
         return 0;
     case SDL_KEYDOWN:
         return (capture && !e->key.repeat) ? (int)e->key.keysym.scancode : 0;
@@ -244,6 +360,36 @@ static int input_level(int code, const Uint8 *keys)
     if (code <= 0) return 0;
     if (code < IM_PAD_BUTTON) return (keys && code < 512 && keys[code]) ? 1000 : 0;
     int best = 0;
+    const int dead = 8000;                        /* stick dead zone */
+    /* plain joysticks: their own codes, and the controller inputs of the
+     * default bindings (A/B/X/Y = buttons 1-4, left stick, D-pad = hat 1) */
+    int jb = -1, ja = -1, jpos = 0, jh = -1, jd = 0;
+    if (code >= IM_JOY_HAT && code < IM_JOY_END) { jh = (code - IM_JOY_HAT) / 4; jd = (code - IM_JOY_HAT) & 3; }
+    else if (code >= IM_JOY_AXIS) { ja = (code - IM_JOY_AXIS) / 2; jpos = (code - IM_JOY_AXIS) & 1; }
+    else if (code >= IM_JOY_BUTTON) jb = code - IM_JOY_BUTTON;
+    else if (code < IM_PAD_AXIS) {
+        int b = code - IM_PAD_BUTTON;
+        if (b >= SDL_CONTROLLER_BUTTON_A && b <= SDL_CONTROLLER_BUTTON_Y) jb = b - SDL_CONTROLLER_BUTTON_A;
+        else if (b >= SDL_CONTROLLER_BUTTON_DPAD_UP && b <= SDL_CONTROLLER_BUTTON_DPAD_RIGHT) { jh = 0; jd = b - SDL_CONTROLLER_BUTTON_DPAD_UP; }
+    } else {
+        int a = (code - IM_PAD_AXIS) / 2;
+        if (a == SDL_CONTROLLER_AXIS_LEFTX || a == SDL_CONTROLLER_AXIS_LEFTY) { ja = a; jpos = (code - IM_PAD_AXIS) & 1; }
+    }
+    for (int i = 0; i < MAX_PADS; i++) {
+        if (!joys[i]) continue;
+        int v = 0;
+        if (jb >= 0 && jb < SDL_JoystickNumButtons(joys[i])) v = SDL_JoystickGetButton(joys[i], jb) ? 1000 : 0;
+        else if (ja >= 0 && ja < SDL_JoystickNumAxes(joys[i])) {
+            int raw = SDL_JoystickGetAxis(joys[i], ja);
+            if (!jpos) raw = -raw;
+            v = raw > dead ? (int)((long)(raw - dead) * 1000 / (32767 - dead)) : 0;
+        } else if (jh >= 0 && jh < SDL_JoystickNumHats(joys[i])) {
+            static const Uint8 MASK[4] = { SDL_HAT_UP, SDL_HAT_DOWN, SDL_HAT_LEFT, SDL_HAT_RIGHT };
+            v = (SDL_JoystickGetHat(joys[i], jh) & MASK[jd]) ? 1000 : 0;
+        }
+        if (v > best) best = v;
+    }
+    if (code >= IM_JOY_BUTTON) return best;
     for (int i = 0; i < MAX_PADS; i++) {
         if (!pads[i]) continue;
         int v = 0;
@@ -253,7 +399,6 @@ static int input_level(int code, const Uint8 *keys)
             int a = (code - IM_PAD_AXIS) / 2, pos = (code - IM_PAD_AXIS) & 1;
             int raw = SDL_GameControllerGetAxis(pads[i], (SDL_GameControllerAxis)a);
             if (!pos) raw = -raw;
-            const int dead = 8000;                /* stick dead zone */
             v = raw > dead ? (int)((long)(raw - dead) * 1000 / (32767 - dead)) : 0;
         }
         if (v > best) best = v;

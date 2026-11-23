@@ -24,6 +24,18 @@ enum {
  * 1000 + b = controller button b, 2000 + 2*axis + (positive) = axis */
 #define IM_PAD_BUTTON 1000
 #define IM_PAD_AXIS   2000
+/* Joysticks SDL does not know as controllers (home-made pads, Arduino...):
+ * 3000 + button, 3200 + 2*axis + (positive), 3300 + 4*hat + (0 up 1 down
+ * 2 left 3 right). With the default bindings they also answer to the
+ * controller inputs: A/B/X/Y = buttons 1-4, left stick = axes 1-2,
+ * D-pad = hat 1. */
+#define IM_JOY_BUTTON 3000
+#define IM_JOY_AXIS   3200
+#define IM_JOY_HAT    3300
+#define IM_JOY_END    3400
+
+/* 1 = the SDL event is a joystick / controller event for input_map_event */
+int         input_map_is_pad_event(const SDL_Event *e);
 
 void        input_map_init(void);                 /* defaults, controles.ini, controllers */
 const char *input_map_action_name(int act);       /* French label */
@@ -34,6 +46,8 @@ void        input_map_code_name(int code, char *buf, int n);
 
 int         input_map_mouse_enabled(void);
 void        input_map_set_mouse(int on);          /* saved */
+int         input_map_pads_enabled(void);
+void        input_map_set_pads(int on);           /* options.ini pads=0|1 */
 
 /* SDL event: opens / closes controllers on hot-plug. While capturing
  * (assignment panel), returns the code of the key / button / axis just

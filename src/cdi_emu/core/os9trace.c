@@ -76,8 +76,8 @@ void os9trace_step(bus_t *b, uint32_t pc, uint32_t sp, const uint32_t d[8], cons
                         pend[i].path[0] ? "\"" : "", pend[i].path, pend[i].path[0] ? "\"" : "",
                         err ? "ERROR" : "ok");
                 if (err) fprintf(stderr, " #%03u ($%02X:%02X)", d[1] & 0xFFFF, (d[1] >> 8) & 0xFF, d[1] & 0xFF);
-                fprintf(stderr, "  [in d0=%08X d1=%08X, out d0=%08X d1=%08X, pc=%06X]\n",
-                        pend[i].d0, pend[i].d1, d[0], d[1], pc - 4);
+                fprintf(stderr, "  [in d0=%08X d1=%08X, out d0=%08X d1=%08X d2=%08X, pc=%06X]\n",
+                        pend[i].d0, pend[i].d1, d[0], d[1], d[2], pc - 4);
             }
             pend[i].ret = 0;
         }

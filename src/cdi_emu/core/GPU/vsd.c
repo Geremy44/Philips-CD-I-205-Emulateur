@@ -31,6 +31,19 @@ void vsd_reset(vsd_t *v)
         v->clut[i] = ((uint32_t)i << 16) | ((uint32_t)i << 8) | (uint32_t)i;
 }
 
+/* Command from one plane's control program. The registers that exist once
+ * per plane (transparent colour C4 / C6, mask C7 / C9, DYUV start CA / CB,
+ * weight DB / DC) only take the writes of their own plane: Hotel Mario's
+ * plane B program also writes C4 (EFF7F7), which must not replace plane A's
+ * transparent colour (white), else plane A hides the whole background. */
+void vsd_command_plane(vsd_t *v, uint32_t w, int plane_b)
+{
+    uint8_t op = (uint8_t)(w >> 24);
+    if (plane_b && (op == 0xC4 || op == 0xC7 || op == 0xCA || op == 0xDB)) return;
+    if (!plane_b && (op == 0xC6 || op == 0xC9 || op == 0xCB || op == 0xDC)) return;
+    vsd_command(v, w);
+}
+
 void vsd_command(vsd_t *v, uint32_t w)
 {
     uint8_t  op   = (uint8_t)(w >> 24);

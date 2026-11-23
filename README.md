@@ -155,6 +155,16 @@ un CD audio), `.iso` (secteurs de 2048 octets). Une piste déclarée
 « données » mais sans en-tête de synchronisation CD-ROM est jouée comme
 de l'audio (CD audio mal décrit par son `.cue`).
 
+**Images CHD (format compressé de MAME, version 5)** : un `.chd` s'ouvre
+comme un `.cue`. Le lecteur est écrit pour l'émulateur (`core/CDIC/chd.c`,
+sans code de MAME) : carte des blocs compressée, codecs CD `cdlz` (LZMA),
+`cdzl` (deflate) et `cdfl` (FLAC, pistes audio), sous-code, octets ECC
+reconstitués. Les CHD différentiels (qui dépendent d'une autre image) et la
+compression zstd (`cdzs`) ne sont pas gérés. **Fichier > Convertir une image
+CHD en BIN/CUE…** écrit le `.bin` et le `.cue` à côté du `.chd` (barre de
+progression ; aussi en ligne de commande : `cdi205 --convert image.chd`),
+par exemple pour graver l'image.
+
 **Disque physique (lecteur CD / DVD / BD du PC, Windows)** : le menu Fichier
 liste chaque lecteur optique de la machine :
 
@@ -165,12 +175,43 @@ liste chaque lecteur optique de la machine :
   `CDI-205/Games/<nom>/<nom>.bin` + `.cue` (dossier trouvé au-dessus de
   l'exécutable, sinon `Games` à côté de lui). Le nom est le volume du
   disque CD-i ; un dossier existant n'est jamais écrasé (`_2`, `_3`…). La
-  progression s'affiche dans le titre de la fenêtre, le résultat dans une
+  progression s'affiche dans une petite fenêtre avec une barre, le résultat dans une
   boîte de dialogue ; l'émulateur continue de tourner pendant ce temps.
   Secteurs illisibles : 3 essais, puis remplis de zéros (signalé).
 
 Lecture brute par la commande SCSI READ CD (`$BE`, SCSI pass-through),
 `IOCTL_CDROM_RAW_READ` en secours.
+
+**Graver une image sur un CD vierge** (pour remplacer un disque abîmé) :
+pour chaque lecteur, le menu Fichier a un sous-menu **Graver une image
+(lecteur X:)** :
+
+- **Simulation (laser éteint, le disque reste vierge)…** — le graveur fait
+  toute la gravure sans allumer le laser. À faire avant une première vraie
+  gravure pour vérifier que le graveur accepte l'image. Avant d'écrire,
+  l'émulateur relit les paramètres du graveur et annule si le mode test n'y
+  est plus. À la fin, il vérifie que le disque est toujours vierge et
+  prévient sinon ;
+- **GRAVER réellement sur un CD-R vierge (définitif)…** — choisir l'image
+  (`.cue` + `.bin`, ou `.bin`/`.img` brut), confirmer, et le disque est
+  gravé en une passe (« disc at once »). Chaque secteur est écrit brut,
+  tel qu'il est dans l'image : 2352 octets avec synchronisation, en-tête,
+  sous-en-tête, données et codes de correction, donc les secteurs CD-i mode 2
+  forme 1 / forme 2 et les pistes audio sont recopiés à l'identique. La
+  zone d'introduction du disque le déclare « disque CD-i » quand l'image en
+  est un. Gravure en 16x, puis les pistes de données sont relues et
+  comparées à l'image, et le disque est éjecté.
+
+Chaque gravure ou simulation est notée dans `gravure.log`, à côté de
+l'exécutable (date, mode, image, paramètres envoyés, résultat).
+
+Il faut un CD-R (ou un CD-RW effacé) vierge et assez grand. Les images
+`.iso` (secteurs de 2048 octets) ne sont pas gérées ici. La progression
+s'affiche dans une petite fenêtre avec une barre et le détail des commandes envoyées
+au graveur dans le journal (`[BURN]`). Commandes MMC par SCSI pass-through :
+MODE SELECT page 05 (écriture « session at once », test, protection contre
+la sous-alimentation du tampon), SEND CUE SHEET, WRITE(10) depuis le
+pré-gap de la piste 1 (LBA -150), SYNCHRONIZE CACHE.
 
 ### Contrôles
 
@@ -185,6 +226,8 @@ la fermer quitte l'émulateur. La console série est masquée par défaut
 | Boutons du CD-i | clics gauche / droit (inversés par défaut comme sur la manette, **F7** pour échanger) ; Espace-Entrée / Retour arrière-Ctrl droit ; manette A-X / B-Y |
 | Assigner les touches et la manette | menu **Contrôles > Assigner les touches…** : clic sur une case puis touche, bouton ou direction de stick ; clic droit efface ; enregistré dans `controles.ini` à côté de l'exécutable |
 | Couper la souris (clavier / manette seuls) | menu **Contrôles > Souris active** (aussi dans le panneau d'assignation) |
+| Manettes « maison » (Arduino…) | les manettes que SDL ne connaît pas sont ouvertes comme joysticks : avec les réglages par défaut, axes 1-2 = directions, boutons 1-4 = A/B/X/Y, croix 1 = croix ; dans le panneau d'assignation, leurs boutons, axes et croix s'affichent « Bouton n », « Axe n ± », « Croix n » |
+| Couper les manettes | menu **Contrôles > Manettes actives** : décoché, les manettes sont ignorées dès le démarrage (`pads=0` dans `options.ini`), utile si une manette bloque le lancement |
 | Brancher / retirer la cartouche vidéo numérique (MPEG) | menu **Matériel** (le CD-i redémarre) |
 | Réinitialiser le CD-i (bouton reset, le disque reste) | menu **Fichier > Réinitialiser le CD-i** ou **Ctrl+R** |
 | Ouvrir un disque (image) | menu **Fichier > Ouvrir un disque…** ou **Ctrl+O**, ou le bouton OPEN du CD-i |
@@ -192,7 +235,8 @@ la fermer quitte l'émulateur. La console série est masquée par défaut
 | Afficher / masquer la souris du PC sur l'image | **F8** |
 | Statistiques : images/s, fréquence du 68070 mesurée, charge, son, MPEG | **F3** |
 | Format d'image 4:3 / 16:9 (étiré, pour les disques en 16:9 comme *The 7th Guest*) | **F2** ou menu **Affichage** |
-| Filtre vidéo suivant : aucun, lissé, lignes de balayage, écran cathodique | **F4** ou menu **Affichage** |
+| Bords masqués comme sur une télé (24 pixels à gauche et à droite, actif par défaut) | menu **Affichage** : en mode 768 pixels le CD-i lit 384 octets par ligne, et certains jeux (Inca) rangent des lignes plus courtes, dont la suite apparaît au bord droit, hors écran sur une télé |
+| Filtre vidéo suivant : aucun, lissé (flou), lissé net, lissé contours, écran cathodique, lignes de balayage | **F4** ou menu **Affichage** |
 | Inverser clic gauche / droit | **F7** |
 | Sauvegarder NVRAM + horloge dans le slot courant | **F5** |
 | Rappeler le slot courant | **F9** |
@@ -209,13 +253,24 @@ et `enregistrer.bat` (session enregistrée sur une NVRAM vierge, `partie.rec`
 
 - **Format** (menu **Affichage** ou **F2**) : 4:3, ou 16:9 qui étire l'image
   en largeur pour les disques prévus pour un écran large (*The 7th Guest*).
-- **Filtre** (menu **Affichage** ou **F4**) : aucun (pixels nets), lissé
-  (interpolation bilinéaire), lignes de balayage (une bande sombre sous
-  chaque ligne du CD-i), écran cathodique (lissé + lignes + masque RVB +
-  coins assombris).
+- **Filtre** (menu **Affichage** ou **F4**) :
+  - aucun : pixels nets ;
+  - lissé (flou) : interpolation bilinéaire, douce mais floue ;
+  - lissé net : chaque pixel est d'abord répété (×2 en largeur, ×4 en
+    hauteur), puis l'image est mise à l'échelle avec interpolation. Les
+    bords restent francs, sans pixels de tailles inégales ni flou ;
+  - lissé contours : agrandissement EPX / Scale2x appliqué deux fois (×4)
+    sur l'image d'origine, qui arrondit les diagonales et les contours des
+    aplats (menus, texte, dessins). Sur les photos et les vidéos, le rendu
+    est proche de « lissé net ». Il coûte environ 1,6 ms de calcul par
+    image ;
+  - écran cathodique : lissé + lignes + masque RVB + coins assombris ;
+  - lignes de balayage : une bande sombre sous chaque ligne du CD-i.
 - Les deux choix sont mémorisés dans `options.ini`, à côté de l'exécutable.
 - Les filtres sont faits par le moteur de rendu SDL2 (mélanges calculés par
-  la carte graphique) : SDL2 n'accepte pas de vrais shaders.
+  la carte graphique) et, pour « lissé net » et « lissé contours », par un
+  agrandissement calculé par le processeur : SDL2 n'accepte pas de vrais
+  shaders.
 
 ### Sauvegardes de jeu et horloge
 

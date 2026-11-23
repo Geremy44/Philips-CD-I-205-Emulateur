@@ -59,14 +59,75 @@ void cdrom_close(cdrom_t *c)
     free(c);
 }
 
+/* Full TOC (READ TOC format 2, the raw Q-channel points of the lead-in).
+ * Needed for CD-i discs written to the Green Book: the TOC holds only the
+ * A0 / A1 / A2 points (disc type 10h, lead-out) and no entry for the CD-i
+ * track, so the normal TOC request fails ("no track"). The CD-i track then
+ * starts at LBA 0 and runs to the lead-out. */
+static int read_full_toc(cdrom_t *c, cdrom_toc_t *toc)
+{
+    if (!c->spti) return -1;
+    static uint8_t buf[4 + 11 * 110];
+    struct { SCSI_PASS_THROUGH_DIRECT s; UCHAR sense[32]; } p;
+    memset(&p, 0, sizeof(p));
+    memset(buf, 0, sizeof(buf));
+    p.s.Length = sizeof(p.s);
+    p.s.CdbLength = 10;
+    p.s.SenseInfoLength = sizeof(p.sense);
+    p.s.SenseInfoOffset = (ULONG)((char *)p.sense - (char *)&p);
+    p.s.DataIn = SCSI_IOCTL_DATA_IN;
+    p.s.DataTransferLength = sizeof(buf);
+    p.s.TimeOutValue = 30;
+    p.s.DataBuffer = buf;
+    p.s.Cdb[0] = 0x43;
+    p.s.Cdb[1] = 0x02;                           /* MSF */
+    p.s.Cdb[2] = 0x02;                           /* format 2: full TOC */
+    p.s.Cdb[7] = (UCHAR)(sizeof(buf) >> 8);
+    p.s.Cdb[8] = (UCHAR)sizeof(buf);
+    DWORD got = 0;
+    if (!DeviceIoControl(c->h, IOCTL_SCSI_PASS_THROUGH_DIRECT, &p, sizeof(p), &p, sizeof(p), &got, NULL)
+        || p.s.ScsiStatus != 0)
+        return -1;
+    int len = (buf[0] << 8 | buf[1]) + 2;
+    if (len > (int)sizeof(buf)) len = sizeof(buf);
+    int n = 0, leadout = -1, cdi = 0;
+    memset(toc, 0, sizeof(*toc));
+    for (int o = 4; o + 11 <= len; o += 11) {
+        const uint8_t *e = buf + o;
+        if (e[0] != 1) continue;                 /* first session only */
+        int point = e[3], lba = (e[8] * 60 + e[9]) * 75 + e[10] - 150;
+        if (point == 0xA0 && e[9] == 0x10) cdi = 1;
+        else if (point == 0xA2) leadout = lba;
+        else if (point >= 1 && point <= 99 && n < CDROM_MAX_TRACKS) {
+            toc->number[n] = point;
+            toc->start[n] = lba < 0 ? 0 : lba;
+            toc->audio[n] = !(e[1] & 4);
+            n++;
+        }
+    }
+    if (leadout <= 0) return -1;
+    if (n == 0) {                                /* Green Book CD-i: hidden track */
+        toc->number[0] = 1;
+        toc->start[0] = 0;
+        toc->audio[0] = 0;
+        n = 1;
+        fprintf(stderr, "[CDROM] no track in the TOC%s: one data track 0..%d\n",
+                cdi ? " (CD-i disc)" : "", leadout);
+    }
+    toc->ntracks = n;
+    toc->leadout = leadout;
+    return 0;
+}
+
 int cdrom_read_toc(cdrom_t *c, cdrom_toc_t *toc)
 {
     CDROM_TOC t;
     DWORD got = 0;
     memset(toc, 0, sizeof(*toc));
-    if (!DeviceIoControl(c->h, IOCTL_CDROM_READ_TOC, NULL, 0, &t, sizeof(t), &got, NULL)) return -1;
+    if (!DeviceIoControl(c->h, IOCTL_CDROM_READ_TOC, NULL, 0, &t, sizeof(t), &got, NULL))
+        return read_full_toc(c, toc);
     int n = t.LastTrack - t.FirstTrack + 1;
-    if (n < 1 || n > CDROM_MAX_TRACKS) return -1;
+    if (n < 1 || n > CDROM_MAX_TRACKS) return read_full_toc(c, toc);
     for (int i = 0; i <= n; i++) {
         const TRACK_DATA *d = &t.TrackData[i];
         int lba = (d->Address[1] * 60 + d->Address[2]) * 75 + d->Address[3] - 150;

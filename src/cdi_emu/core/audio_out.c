@@ -25,6 +25,7 @@ typedef struct {
     int16_t  buf[RING_FRAMES * 2];
     int      head, count;                      /* in stereo frames */
     unsigned long pushed, dropped, starved;    /* statistics (EMU_AUDIO_LOG) */
+    int      primed, waited;           /* playing / frames waited while filling */
     int      gain[4];                  /* LL, LR, RR, RL in 1/4096 (4096 = 0 dB) */
     uint8_t  atten[4];                 /* as set: dB, bit 7 = off */
 } source_t;
@@ -88,18 +89,32 @@ static void fill(void *ud, Uint8 *stream, int len)
     (void)ud;
     int16_t *out = (int16_t *)stream;
     int frames = len / 4;
+    /* Pre-buffer: a source (re)starts once ~150 ms are queued, or 150 ms
+     * after its first sample (short sound effects). The disc delivers the
+     * sound in 53 ms sectors and the device takes 54 ms blocks: started
+     * from an empty queue, the music ran dry dozens of times in its first
+     * seconds (Inca's pan flute stuttered). */
+    const int prime = ADPCM_RATE * 15 / 100;
+    for (int s = 0; s < AUDIO_SOURCES; s++) {
+        source_t *q = &src[s];
+        if (!q->count) { q->primed = 0; q->waited = 0; continue; }
+        if (!q->primed) {
+            if (q->count >= prime || q->waited >= prime) q->primed = 1;
+            else q->waited += frames;
+        }
+    }
     for (int i = 0; i < frames; i++) {
         int l = 0, r = 0;
         for (int s = 0; s < AUDIO_SOURCES; s++) {
             source_t *q = &src[s];
-            if (!q->count) continue;
+            if (!q->count || !q->primed) continue;
             int il = q->buf[2 * q->head], ir = q->buf[2 * q->head + 1];
             /* attenuation matrix, factors in 1/4096 */
             l += (il * q->gain[0] + ir * q->gain[3]) >> 12;
             r += (ir * q->gain[2] + il * q->gain[1]) >> 12;
             q->head = (q->head + 1) % RING_FRAMES;
             q->count--;
-            if (!q->count) q->starved++;
+            if (!q->count) { q->starved++; q->primed = 0; q->waited = 0; }
         }
         out[2 * i]     = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
         out[2 * i + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);

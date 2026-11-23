@@ -30,6 +30,7 @@
 #include "core/audio_out.h"
 #include "core/rtc_m48t08.h"
 #include "core/CDIC/cdrom_win.h"
+#include "core/CDIC/cdburn.h"
 #include "core/FMV/fmv.h"
 #include "core/rom_import.h"
 #ifdef _WIN32
@@ -93,7 +94,7 @@ static int hotkey(int fkey)
         video_display_set_aspect(!video_display_aspect_wide());
         return 1;
     case 4:                                   /* next video filter */
-        video_display_set_filter(video_display_filter() + 1);
+        video_display_next_filter();
         return 1;
     case 8:
         video_display_toggle_host_cursor();
@@ -148,6 +149,106 @@ static void insert_disc_dialog(int close_empty)
         slave_hle_set_tray(g_be, 0, cdic_disc_kind(g_cdic));  /* door closed, disc ready */
     } else if (close_empty) {
         slave_hle_set_tray(g_be, 0, 0);
+    }
+}
+
+/* ---- CHD -> BIN/CUE conversion (own thread, progress window) ---- */
+static SDL_atomic_t conv_state;            /* 0 idle, 1 running, 2 finished */
+static volatile long conv_pct;
+static char conv_src[1100], conv_bin[1200], conv_cue[1200], conv_msg[2000];
+
+static int file_exists(const char *p)
+{
+    SDL_RWops *f = SDL_RWFromFile(p, "rb");
+    if (!f) return 0;
+    SDL_RWclose(f);
+    return 1;
+}
+
+/* .bin / .cue next to the source, " (2)", " (3)"... if they exist */
+static int conv_names(const char *src)
+{
+    char base[1100];
+    snprintf(base, sizeof(base), "%s", src);
+    char *dot = strrchr(base, '.'), *sl1 = strrchr(base, '/'), *sl2 = strrchr(base, 92);
+    char *sl = sl1 > sl2 ? sl1 : sl2;
+    if (dot && (!sl || dot > sl)) *dot = 0;
+    for (int k = 1; k < 100; k++) {
+        char suf[16] = "";
+        if (k > 1) snprintf(suf, sizeof(suf), " (%d)", k);
+        snprintf(conv_bin, sizeof(conv_bin), "%s%s.bin", base, suf);
+        snprintf(conv_cue, sizeof(conv_cue), "%s%s.cue", base, suf);
+        if (!file_exists(conv_bin) && !file_exists(conv_cue)) return 0;
+    }
+    return -1;
+}
+
+/* 0 = ok, 1 = ok with unreadable sectors, -1 = failed; text in conv_msg */
+static int conv_run(void)
+{
+    static disc_t d;
+    char err[1300];
+    memset(&d, 0, sizeof(d));
+    if (disc_open(&d, conv_src) != 0) {
+        snprintf(conv_msg, sizeof(conv_msg), "Impossible de lire l'image :\n%s\n(d\xC3\xA9tail dans le journal : [DISC])", conv_src);
+        return -1;
+    }
+    int r = disc_write_bincue(&d, conv_bin, conv_cue, &conv_pct, err, sizeof(err));
+    if (r < 0) snprintf(conv_msg, sizeof(conv_msg), "%s", err);
+    else snprintf(conv_msg, sizeof(conv_msg), "Image convertie (%d piste%s) :\n%s\n%s%s%s\n\n"
+                  "Elle s'ouvre avec Fichier > Ouvrir un disque et peut se graver.",
+                  d.ntracks, d.ntracks > 1 ? "s" : "", conv_cue, conv_bin, r > 0 ? "\n\n" : "", r > 0 ? err : "");
+    disc_close(&d);
+    return r;
+}
+
+static int SDLCALL conv_thread(void *arg)
+{
+    (void)arg;
+    conv_run();
+    SDL_AtomicSet(&conv_state, 2);
+    return 0;
+}
+
+static void convert_chd(void)
+{
+    if (SDL_AtomicGet(&conv_state)) {
+        video_display_message("Conversion CHD", "Une conversion est d\xC3\xA9j\xC3\xA0 en cours.");
+        return;
+    }
+    if (!video_display_choose_image("Image CHD \xC3\xA0 convertir en BIN/CUE", conv_src, sizeof(conv_src)))
+        return;
+    const char *dot = strrchr(conv_src, '.');
+    if (!dot || SDL_strcasecmp(dot, ".chd") != 0) {
+        video_display_message("Conversion CHD", "Choisissez un fichier .chd.");
+        return;
+    }
+    if (conv_names(conv_src) != 0) {
+        video_display_message("Conversion CHD", "Trop de fichiers du m\xC3\xAAme nom \xC3\xA0 c\xC3\xB4t\xC3\xA9 de l'image.");
+        return;
+    }
+    conv_pct = 0;
+    SDL_AtomicSet(&conv_state, 1);
+    SDL_Thread *t = SDL_CreateThread(conv_thread, "chd2bin", NULL);
+    if (!t) { SDL_AtomicSet(&conv_state, 0); video_display_message("Conversion CHD", "Impossible de lancer la conversion."); return; }
+    SDL_DetachThread(t);
+    fprintf(stderr, "[CHD] converting '%s' -> '%s'\n", conv_src, conv_cue);
+    video_display_progress("Conversion CHD en BIN/CUE", "D\xC3\xA9" "compression de l'image...", 0);
+}
+
+static void conv_poll(void)
+{
+    static long last = -1;
+    int st = SDL_AtomicGet(&conv_state);
+    if (st == 1 && conv_pct != last) {
+        last = conv_pct;
+        video_display_progress("Conversion CHD en BIN/CUE", "D\xC3\xA9" "compression de l'image...", (int)last);
+    } else if (st == 2) {
+        video_display_progress(NULL, NULL, -1);
+        fprintf(stderr, "[CHD] %s\n", conv_msg);
+        video_display_message("Conversion CHD", conv_msg);
+        SDL_AtomicSet(&conv_state, 0);
+        last = -1;
     }
 }
 
@@ -207,7 +308,7 @@ static void rip_poll(void)
     if (p < 0) return;
     if (done) {
         if (last != -3) {
-            video_display_set_title(NULL);
+            video_display_progress(NULL, NULL, -1);
             char text[1400];
             if (strstr(msg, ".cue") && !strstr(msg, "Impossible") && !strstr(msg, "Pas de disque"))
                 snprintf(text, sizeof(text), "Disque extrait :\n%s\n\nIl s'ouvre avec Fichier > Ouvrir un disque.", msg);
@@ -220,16 +321,74 @@ static void rip_poll(void)
         return;
     }
     if (p != last) {
-        char title[96];
-        snprintf(title, sizeof(title), "CD-i 205 - Extraction du disque : %d %%", p);
-        video_display_set_title(title);
+        video_display_progress("Extraction du disque", "Lecture du disque et \xC3\xA9" "criture de l'image BIN/CUE...", p);
         last = p;
     }
+}
+
+/* Burning an image: progress in the window title, result in a box */
+static void burn_poll(void)
+{
+    static int last = -2;
+    static char last_stage[64];
+    int done = 0;
+    char stage[64], msg[1700];
+    int p = cdburn_progress(&done, stage, sizeof(stage), msg, sizeof(msg));
+    if (p < 0) return;
+    if (done) {
+        if (last != -3) {
+            video_display_progress(NULL, NULL, -1);
+            video_display_message("Gravure du disque", msg);
+            last = -3;
+        }
+        return;
+    }
+    if (p != last || strcmp(stage, last_stage)) {
+        char text[128];
+        snprintf(text, sizeof(text), "%s du disque...", stage);
+        video_display_progress("Gravure du disque", text, p);
+        last = p;
+        snprintf(last_stage, sizeof(last_stage), "%s", stage);
+    }
+}
+
+/* File > burn an image on the blank disc of a drive */
+static void burn_image(char letter, int simulate)
+{
+    char path[1100], info[1400], text[1800];
+    if (!video_display_choose_image(simulate ? "Image \xC3\xA0 tester (simulation de gravure)"
+                                             : "Image \xC3\xA0 graver sur un CD vierge", path, sizeof(path)))
+        return;
+    if (cdburn_describe(path, info, sizeof(info)) != 0) {
+        video_display_message("Gravure du disque", info);
+        return;
+    }
+    if (simulate)
+        snprintf(text, sizeof(text), "%s\n\nSimuler la gravure sur le CD vierge du lecteur %c: ?\n"
+                 "Le graveur fait tout le travail laser \xC3\xA9teint : le disque reste vierge.", info, letter);
+    else
+        snprintf(text, sizeof(text), "GRAVURE R\xC3\x89" "ELLE (laser allum\xC3\xA9), ce n'est PAS une simulation.\n\n"
+                 "%s\n\nGraver cette image sur le CD vierge du lecteur %c: ?\n"
+                 "Un CD-R grav\xC3\xA9 ne peut plus \xC3\xAAtre r\xC3\xA9\xC3\xA9" "crit. La gravure se fait en 16x, "
+                 "puis les donn\xC3\xA9" "es sont relues et compar\xC3\xA9" "es \xC3\xA0 l'image.\n"
+                 "Ne retirez pas le disque avant la fin.", info, letter);
+    if (!video_display_confirm(simulate ? "Simulation de gravure (laser \xC3\xA9teint)" : "GRAVURE R\xC3\x89" "ELLE du disque", text,
+                               simulate ? "Simuler" : "Graver pour de vrai"))
+        return;
+    if (cdburn_start(letter, path, simulate) != 0) {
+        video_display_message("Gravure du disque", "Une gravure est d\xC3\xA9j\xC3\xA0 en cours.");
+        return;
+    }
+    fprintf(stderr, "[BURN] %s '%s' on drive %c:\n", simulate ? "simulating" : "burning", path, letter);
+    video_display_progress(simulate ? "Simulation de gravure (laser \xC3\xA9teint)" : "GRAVURE R\xC3\x89" "ELLE du disque",
+                           "Pr\xC3\xA9paration du disque...", 0);
 }
 
 /* Menu bar of the video window */
 static void menu_action(int id)
 {
+    if (id >= VM_DRIVE_BURN && id < VM_DRIVE_BURN + 26) { burn_image((char)('A' + id - VM_DRIVE_BURN), 0); return; }
+    if (id >= VM_DRIVE_BURN_TEST && id < VM_DRIVE_BURN_TEST + 26) { burn_image((char)('A' + id - VM_DRIVE_BURN_TEST), 1); return; }
     if (g_rec && (id == VM_OPEN_DISC || id == VM_EJECT || id == VM_RESET ||
                   (id >= VM_DRIVE_PLAY && id < VM_DRIVE_PLAY + 26))) {   /* replayed at this step */
         /* (a reset requested from the frame block happens at the next step) */
@@ -242,7 +401,7 @@ static void menu_action(int id)
         games_dir(dir, sizeof(dir));
         if (cdrom_rip_start(letter, dir) == 0) {
             fprintf(stderr, "[RIP] drive %c: -> %s\n", letter, dir);
-            video_display_set_title("CD-i 205 - Extraction du disque : 0 %");
+            video_display_progress("Extraction du disque", "Lecture du disque...", 0);
         } else {
             video_display_message("Extraction du disque", "Une extraction est d\xC3\xA9j\xC3\xA0 en cours.");
         }
@@ -265,6 +424,9 @@ static void menu_action(int id)
         video_display_menu_check(VM_FMV, fmv_enabled());
         g_reset_request = 1;                            /* CD-RTOS looks for it at boot */
         break;
+    case VM_CONVERT_CHD:
+        convert_chd();
+        break;
     case VM_IMPORT_ROM:
         import_roms_dialog();
         break;
@@ -284,6 +446,7 @@ static void menu_action(int id)
     case VM_ASPECT_43:   video_display_set_aspect(0); break;
     case VM_ASPECT_169:  video_display_set_aspect(1); break;
     case VM_FILTER0 + 0: case VM_FILTER0 + 1: case VM_FILTER0 + 2: case VM_FILTER0 + 3:
+    case VM_FILTER0 + 4: case VM_FILTER0 + 5:
         video_display_set_filter(id - VM_FILTER0);
         break;
     case VM_HOST_CURSOR: video_display_toggle_host_cursor(); break;
@@ -397,8 +560,22 @@ int main(int argc, char* argv[]) {
         printf("%s", msg);
         return done ? 0 : 1;
     }
+    /* cdi205 --convert image.chd: write image.bin + image.cue next to it and quit */
+    if (argc >= 3 && strcmp(argv[1], "--convert") == 0) {
+        snprintf(conv_src, sizeof(conv_src), "%s", argv[2]);
+        if (conv_names(conv_src) != 0) { printf("Too many files with that name\n"); return 1; }
+        int r = conv_run();
+        printf("%s\n", conv_msg);
+        return r < 0 ? 1 : 0;
+    }
     SDL_SetMainReady();
     SDL_SetHint(SDL_HINT_TIMER_RESOLUTION, "1");   /* 1 ms sleeps on Windows */
+    /* SDL's own Nintendo Switch driver talks to the controller over USB when
+     * it opens it; a controller that is only charging never answers and
+     * the opening hangs (emulator frozen at startup). The controller still
+     * works as an ordinary pad. SDL_JOYSTICK_HIDAPI_SWITCH=1 (environment)
+     * gives the driver back. */
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "0");
 
 #ifdef _WIN32
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -677,6 +854,35 @@ int main(int argc, char* argv[]) {
                 if (++ac_n < ac_count) ac_step += 100000000; else ac_x = -1;
             }
         }
+        {   /* EMU_AUTOCLICK2=x,y,step,count[,buttons][;x,y,step,count[,buttons]...]:
+             * more series of clicks, one after the other (tests: PLAY in the
+             * shell, then choices in the game's menus); step = instruction
+             * count of the first click of the series, then every 50M */
+            static long long b[8][5], b_n;
+            static int nser = -1, cur = 0;
+            if (nser < 0) {
+                nser = 0;
+                const char *e = getenv("EMU_AUTOCLICK2");
+                while (e && *e && nser < 8) {
+                    long long *s = b[nser];
+                    s[4] = 1;
+                    if (sscanf(e, "%lld,%lld,%lld,%lld,%lld", &s[0], &s[1], &s[2], &s[3], &s[4]) >= 4) nser++;
+                    e = strchr(e, ';');
+                    if (e) e++;
+                }
+            }
+            if (cur < nser && ac_x < 0) {
+                long long *s = b[cur];
+                if (i > s[2] + 3000000) s[2] = i + 2000000;       /* started late */
+                if (i == s[2] - 2000000) push_pointer(be, (int)s[0], (int)s[1], 0);
+                if (i == s[2]) { push_pointer(be, (int)s[0], (int)s[1], (int)s[4]); fprintf(stderr, "[CLICK2] %lld,%lld (series %d)\n", s[0], s[1], cur + 1); }
+                if (i == s[2] + 3000000) {
+                    push_pointer(be, (int)s[0], (int)s[1], 0);
+                    if (++b_n < s[3]) s[2] += 50000000;
+                    else { b_n = 0; cur++; }
+                }
+            }
+        }
         if (os9_log)
             os9trace_step(bus, cpu.pc, cpu.a[7], cpu.d, cpu.a, cpu.sr);
 
@@ -768,6 +974,19 @@ int main(int argc, char* argv[]) {
             slave_hle_frame(be);
             fflush(stderr);                   /* logs survive a killed process */
             rip_poll();                       /* disc ripping in progress */
+            burn_poll();                      /* image burning in progress */
+            conv_poll();                      /* CHD conversion in progress */
+            {   /* window title = name of the loaded disc (checked on change) */
+                static char shown[1100] = "\x01";
+                const char *p = cdic_has_disc(cdic) ? cdic->disc.path : "";
+                if (strcmp(p, shown)) {
+                    char name[300];
+                    disc_title(&cdic->disc, name, sizeof(name));
+                    video_display_set_disc_title(name);
+                    if (*name) fprintf(stderr, "[DISC] title: %s\n", name);
+                    snprintf(shown, sizeof(shown), "%s", p);
+                }
+            }
             {   /* PC mouse captured while the game recentres the cursor */
                 int cx, cy;
                 int rel = slave_hle_pointer_relative(be, &cx, &cy);

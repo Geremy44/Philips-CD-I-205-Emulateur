@@ -58,6 +58,10 @@ gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/CDIC/cdrom_win.c -o bin/cdrom_win.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/CDIC/cdburn_win.c -o bin/cdburn_win.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
+    core/CDIC/chd.c -o bin/chd.o
+gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/FMV/fmv.c -o bin/fmv.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/FMV/mpeg_demux.c -o bin/mpeg_demux.o
@@ -80,7 +84,7 @@ if %errorlevel% neq 0 (
 )
 
 echo Linking executable...
-gcc -o bin/cdi_emu.exe bin/*.o -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lcomdlg32 -lm
+gcc -o bin/cdi_emu.exe bin/*.o -lmingw32 -lSDL2main -lSDL2 -lSDL2_ttf -lcomdlg32 -lgdi32 -lm
 
 if %errorlevel% neq 0 (
     echo Error linking executable
