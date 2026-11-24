@@ -8,42 +8,6 @@ dossier [`licenses/`](licenses/).
 
 ---
 
-## pl_mpeg
-
-- **Fichier :** `src/cdi_emu/core/FMV/pl_mpeg.h`, inclus avec une seule
-  modification, signalée dans le fichier (contrôle d'en-tête audio assoupli :
-  stéréo et stéréo jointe peuvent alterner)
-- **Rôle :** décodage des images MPEG-1 et du son MPEG-1 Layer II de la
-  cartouche FMV
-- **Auteur :** Dominic Szablewski — <https://github.com/phoboslab/pl_mpeg>
-- **Licence :** MIT
-
-```
-The MIT License (MIT)
-
-Copyright (c) 2019 Dominic Szablewski
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
----
-
 ## Bibliothèques livrées avec la version Windows
 
 Le build portable (releases) contient, sans modification, les DLL suivantes

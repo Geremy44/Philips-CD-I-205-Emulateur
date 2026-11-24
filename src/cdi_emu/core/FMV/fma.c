@@ -3,7 +3,7 @@
  * its DSP56001 (MPEG-1 layer II), registers at $E03000
  *
  * Written for this emulator from docs/fmv/FMV_COMPORTEMENT.md (section 4).
- * Frames are decoded by pl_mpeg and played through the host output,
+ * Frames are decoded by mp2_audio.c and played through the host output,
  * resampled to 37.8 kHz.
  */
 
@@ -14,8 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PLM_NO_STDIO
-#include "pl_mpeg.h"
+#include "mp2_audio.h"
 
 #define TICK          (FMV_CPU_HZ / 100)   /* the chip's 10 ms period */
 #define HOST_RATE     37800
@@ -52,8 +51,7 @@ static struct {
     uint64_t starve_wait;                  /* see audio_tick */
     int      program_over, skipping;
     mps_t    sys;
-    plm_buffer_t *input;
-    plm_audio_t  *mp2;
+    mpa_t   *mp2;                          /* holds the input not decoded yet */
     /* decoded samples */
     int16_t  pcm[PCM_SIZE * 2];
     int      pcm_first, pcm_count, rate;
@@ -62,13 +60,12 @@ static struct {
 } A;
 
 static uint32_t dclk(void) { return (uint32_t)((fmv_now - A.clock_origin) * 45000 / FMV_CPU_HZ); }
-static size_t input_level(void) { return plm_buffer_get_remaining(A.input); }
+static size_t input_level(void) { return mpa_buffered(A.mp2); }
 
 static void new_decoder(void)
 {
-    if (A.mp2) plm_audio_destroy(A.mp2);   /* frees its buffer too */
-    A.input = plm_buffer_create_with_capacity(INPUT_MAX);
-    A.mp2 = plm_audio_create_with_buffer(A.input, 1);
+    if (A.mp2) mpa_destroy(A.mp2);
+    A.mp2 = mpa_create();
     A.skipping = 0;
 }
 
@@ -112,14 +109,15 @@ void fmva_info(int *kbps, int *rate, int *playing)
 static void decode_frames(void)
 {
     while (A.pcm_count < PCM_AHEAD && A.pcm_count + FRAME_SAMPLES <= PCM_SIZE) {
-        plm_samples_t *f = plm_audio_decode(A.mp2);
-        if (!f) break;
-        A.rate = plm_audio_get_samplerate(A.mp2);
-        A.decoded += f->count;
-        for (unsigned i = 0; i < f->count; i++) {
+        const float *f;
+        int count = mpa_decode(A.mp2, &f);
+        if (count <= 0) break;
+        A.rate = mpa_samplerate(A.mp2);
+        A.decoded += (unsigned long)count;
+        for (int i = 0; i < count; i++) {
             int at = (A.pcm_first + A.pcm_count++) % PCM_SIZE;
             for (int c = 0; c < 2; c++) {
-                float v = f->interleaved[2 * i + c];
+                float v = f[2 * i + c];
                 if (v > 1.f) v = 1.f;
                 if (v < -1.f) v = -1.f;
                 A.pcm[2 * at + c] = (int16_t)(v * 32767.f);
@@ -144,7 +142,7 @@ void fmva_data(uint8_t b)
             A.skipping = 1;
             if (fmv_log >= 2) fprintf(stderr, "[FMV] audio: input well filled, next program skipped\n");
         }
-        if (!A.skipping && input_level() < INPUT_MAX) plm_buffer_write(A.input, &b, 1);
+        if (!A.skipping && input_level() < INPUT_MAX) mpa_write(A.mp2, &b, 1);
         if (fmv_log && A.bytes_in && fmv_now - A.last_input > FMV_CPU_HZ / 20)
             fprintf(stderr, "[FMV] audio data again after %.0f ms\n", (double)(fmv_now - A.last_input) * 1000.0 / FMV_CPU_HZ);
         A.bytes_in++;

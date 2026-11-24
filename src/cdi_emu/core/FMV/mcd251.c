@@ -3,7 +3,7 @@
  * video chip, registers at $E04000
  *
  * Written for this emulator from docs/fmv/FMV_COMPORTEMENT.md (section 3).
- * Pictures are decoded by pl_mpeg; this file follows the stream as it
+ * Pictures are decoded by mpeg1_video.c; this file follows the stream as it
  * arrives, puts the pictures in display order and paces them.
  *
  * fmvv_pixel() takes the chip's own coordinates: 384 pixels across the
@@ -16,9 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PL_MPEG_IMPLEMENTATION
-#define PLM_NO_STDIO
-#include "pl_mpeg.h"
+#include "mpeg1_video.h"
 
 #define DCLK_HZ       45000
 #define PERIOD_CLOCK  30000000              /* clock of the picture period */
@@ -98,8 +96,7 @@ static struct {
     mps_t    sys;
     int64_t  last_dts, due[NOTES_MAX];      /* DTS of each picture in the input, then queued */
     int      due_n;
-    plm_buffer_t *input;
-    plm_video_t  *dec;
+    mpv_t   *dec;                           /* holds the input not decoded yet */
     note_t   notes[NOTES_MAX];
     int      notes_n;
     int      whole;                         /* pictures entirely in the input */
@@ -151,9 +148,8 @@ static void log_irq(const char *why)
 
 static void new_decoder(void)
 {
-    if (V.dec) plm_video_destroy(V.dec);    /* frees its buffer too */
-    V.input = plm_buffer_create_with_capacity(256 * 1024);
-    V.dec = plm_video_create_with_buffer(V.input, 1);
+    if (V.dec) mpv_destroy(V.dec);
+    V.dec = mpv_create();
     V.notes_n = V.whole = 0;
     V.held = 0;
     V.shift = 0; V.hdr_kind = 0; V.seq_seen = V.pic_open = V.new_gop = V.new_seq = 0;
@@ -196,7 +192,7 @@ void fmvv_reset(void)
 }
 
 /* a decoded picture, converted to RGB (ITU-R BT.601, studio range) */
-static void enqueue(plm_frame_t *f, const note_t *note)
+static void enqueue(const mpv_frame_t *f, const note_t *note)
 {
     if (V.queued >= QUEUE_MAX || !f || !f->y.data) return;
     int w = (int)f->width, h = (int)f->height;
@@ -229,7 +225,7 @@ static void release_reference(void)
 {
     if (!V.held) return;
     V.held = 0;
-    enqueue(&V.dec->frame_backward, &V.held_note);   /* the newest reference */
+    enqueue(mpv_frame(V.dec, MPV_REF_NEW), &V.held_note);   /* the newest reference */
 }
 
 static void sequence_over(void)
@@ -242,22 +238,16 @@ static void sequence_over(void)
 /* one picture through the decoder: 1 I, 2 P, 3 B; 0 not ready; -1 skipped */
 static int decode_picture(void)
 {
-    plm_video_t *d = V.dec;
-    if (V.whole <= 0 || !plm_video_has_header(d)) return 0;
-    if (d->start_code != PLM_START_PICTURE) {
-        d->start_code = plm_buffer_find_start_code(d->buffer, PLM_START_PICTURE);
-        if (d->start_code == -1) { V.whole = 0; return 0; }
-    }
+    if (V.whole <= 0 || !mpv_has_header(V.dec)) return 0;
     /* whole only once the next picture's start code is in (or no more
      * data comes): a truncated picture would spoil every picture predicted
      * from it until the next I picture */
-    if (!V.flushing && plm_buffer_has_start_code(d->buffer, PLM_START_PICTURE) == -1) return 0;
-    plm_buffer_discard_read_bytes(d->buffer);
-    d->picture_type = 0;
-    plm_video_decode_picture(d);
+    int t = mpv_decode(V.dec, V.flushing);
+    if (t == MPV_NO_PICTURE) { V.whole = 0; return 0; }
+    if (t == MPV_WAIT) return 0;
     V.whole--;
     if (V.in_input) V.in_input--;
-    return (d->picture_type >= 1 && d->picture_type <= 3) ? d->picture_type : -1;
+    return t > 0 ? t : -1;
 }
 
 static void decode_ready(void)
@@ -271,7 +261,7 @@ static void decode_ready(void)
         memset(&n, 0, sizeof(n));
         if (V.notes_n) { n = V.notes[0]; memmove(V.notes, V.notes + 1, (size_t)--V.notes_n * sizeof(note_t)); }
         if (type < 0) { if (n.ends_seq) sequence_over(); continue; }
-        n.width = (uint16_t)V.dec->width; n.height = (uint16_t)V.dec->height;
+        n.width = (uint16_t)mpv_width(V.dec); n.height = (uint16_t)mpv_height(V.dec);
         V.dec_w = n.width; V.dec_h = n.height; V.dec_tc = n.timecode;
         V.dec_rate = n.rate & 15;
         V.dec_p90 = PERIOD_90K[V.dec_rate];
@@ -280,9 +270,9 @@ static void decode_ready(void)
         if (fmv_log >= 3)
             fprintf(stderr, "[FMV] decoded %dx%d type %d at %.2f s, %d queued\n",
                     V.dec_w, V.dec_h, type, (double)fmv_now / FMV_CPU_HZ, V.queued);
-        if (type == 3) enqueue(&V.dec->frame_current, &n);          /* B: in display order already */
+        if (type == 3) enqueue(mpv_frame(V.dec, MPV_LAST_B), &n);          /* B: in display order already */
         else {
-            if (V.held) enqueue(&V.dec->frame_forward, &V.held_note);   /* the previous reference */
+            if (V.held) enqueue(mpv_frame(V.dec, MPV_REF_OLD), &V.held_note);   /* the previous reference */
             V.held_note = n;
             V.held = 1;
         }
@@ -357,7 +347,7 @@ void fmvv_data(uint8_t b)
     int kept = V.sys.payload;
     mps_byte(&V.sys, b, (uint8_t)(0xE0 | V.stream));
     if (kept) {
-        if (plm_buffer_get_remaining(V.input) < INPUT_MAX) plm_buffer_write(V.input, &b, 1);
+        if (mpv_buffered(V.dec) < INPUT_MAX) mpv_write(V.dec, &b, 1);
         {   static FILE *f = NULL; static int tried = 0;   /* EMU_FMV_ES_DUMP=file (tests) */
             if (!tried) { tried = 1; if (getenv("EMU_FMV_ES_DUMP")) f = fopen(getenv("EMU_FMV_ES_DUMP"), "wb"); }
             if (f) fputc(b, f);
@@ -536,7 +526,7 @@ uint16_t fmvv_read(int reg)
     case 0x2C: v = (uint16_t)(V.shown_note.timecode >> 16); break;
     case 0x2D: v = (uint16_t)V.shown_note.timecode; break;
     case 0x2E: v = V.shown_note.status; break;
-    case 0x2F: v = (plm_buffer_get_remaining(V.input) < WANTS_BELOW || V.starving) ? 0x2000 : 0; break;
+    case 0x2F: v = (mpv_buffered(V.dec) < WANTS_BELOW || V.starving) ? 0x2000 : 0; break;
     case 0x30: v = V.mask; break;
     case 0x31: v = V.pending; V.pending = 0; break;
     case 0x32: v = V.timer; break;

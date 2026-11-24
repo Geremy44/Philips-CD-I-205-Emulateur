@@ -121,7 +121,8 @@ Le comportement des puces est décrit dans `docs/fmv/FMV_COMPORTEMENT.md` et
 programmé pour l'émulateur ; le travail de MAME (demande de fusion
 [#16181](https://github.com/mamedev/mame/pull/16181)) et du cœur
 [CDi_MiSTer](https://github.com/MiSTer-devel/CDi_MiSTer) a servi de
-référence. Le décodage MPEG-1 utilise [pl_mpeg](https://github.com/phoboslab/pl_mpeg) (MIT).
+référence. Le décodage MPEG-1 (image et son MP2) est écrit pour l'émulateur
+d'après la norme ISO 11172.
 Détails : `docs/fmv/FMV_EMULATION_NOTES.md`.
 
 ### Jeux testés
@@ -542,8 +543,6 @@ dans [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) et le dossier
 
 ## 🙏 Crédits
 
-- **pl_mpeg** — Dominic Szablewski (MIT) : décodage MPEG-1 vidéo et audio
-  de la cartouche FMV.
 - **MAME**, demande de fusion [#16181](https://github.com/mamedev/mame/pull/16181)
   — Alexandre Derumier : référence pour le comportement des puces de la
   cartouche Digital Video (le code de l'émulateur est réécrit).
