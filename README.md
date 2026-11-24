@@ -119,8 +119,8 @@ transferts par le canal DMA 2 du 68070. L'image MPEG remplace la couleur de
 fond derrière les plans du CD-i ; le son MPEG part vers la sortie audio.
 Le comportement des puces suit l'émulation de MAME (demande de fusion
 [#16181](https://github.com/mamedev/mame/pull/16181), BSD-3, d'après le cœur
-[CDi_MiSTer](https://github.com/MiSTer-devel/CDi_MiSTer)) ; le décodage
-MPEG-1 utilise [pl_mpeg](https://github.com/phoboslab/pl_mpeg) (MIT).
+[CDi_MiSTer](https://github.com/MiSTer-devel/CDi_MiSTer)) . Le décodage
+MPEG-1 (image et son MP2) est écrit pour l'émulateur d'après la norme ISO 11172.
 Détails : `docs/fmv/FMV_EMULATION_NOTES.md`.
 
 ### Jeux testés
@@ -541,8 +541,6 @@ dans [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) et le dossier
 
 ## 🙏 Crédits
 
-- **pl_mpeg** — Dominic Szablewski (MIT) : décodage MPEG-1 vidéo et audio
-  de la cartouche FMV.
 - **MAME**, demande de fusion [#16181](https://github.com/mamedev/mame/pull/16181)
   — Alexandre Derumier (BSD-3-Clause) : comportement des puces de la
   cartouche Digital Video, porté en C.

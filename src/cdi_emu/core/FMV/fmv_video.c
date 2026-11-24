@@ -5,8 +5,8 @@
  * Register map, status bits, interrupt and display pacing follow MAME's
  * mcd251 device (pull request #16181, BSD-3-Clause, Alexandre Derumier),
  * which was worked out from the CDi_MiSTer core by Andre Zeps. This is a C
- * port of that behaviour, with pl_mpeg (MIT, Dominic Szablewski) as the
- * MPEG-1 picture decoder.
+ * port of that behaviour; the MPEG-1 pictures are decoded by mpeg1_video.c
+ * (written for this emulator from the standard).
  *
  * Coordinates of fmvv_pixel(): the chip's own, 384 pixels across the active
  * line, lines counted from the start of active video.
@@ -21,9 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PL_MPEG_IMPLEMENTATION
-#define PLM_NO_STDIO
-#include "pl_mpeg.h"
+#include "mpeg1_video.h"
 
 #define DCLK_HZ           45000
 #define FRAME_CLOCK_HZ    30000000
@@ -88,8 +86,7 @@ static int64_t  next_dts, dts_q[INFO_Q];
 static int      dts_n;
 
 /* ---- decoder ---- */
-static plm_buffer_t *es;                         /* elementary stream not decoded yet */
-static plm_video_t  *dec;
+static mpv_t   *dec;                             /* holds the elementary stream not decoded yet */
 static pinfo_t  info_q[INFO_Q];                  /* pictures in coded order, from the input */
 static int      info_n;
 static int      complete_pics;                   /* pictures whose end has arrived */
@@ -130,9 +127,8 @@ void fmvv_info(int *w, int *h, int *playing) { *w = dec_w; *h = dec_h; *playing 
 
 static void decoder_new(void)
 {
-    if (dec) plm_video_destroy(dec);         /* also frees its buffer */
-    es = plm_buffer_create_with_capacity(256 * 1024);
-    dec = plm_video_create_with_buffer(es, 1);
+    if (dec) mpv_destroy(dec);
+    dec = mpv_create();
     info_n = complete_pics = 0;
     reference_held = 0;
     sc_shift = 0; sc_kind = 0; seq_seen = pic_open = pend_gop = pend_seq = 0;
@@ -181,7 +177,7 @@ int fmvv_showing(void) { return show_video && display_valid; }
 
 static uint8_t clamp8(int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); }
 
-static void queue_picture(plm_frame_t *f, const pinfo_t *info)
+static void queue_picture(const mpv_frame_t *f, const pinfo_t *info)
 {
     if (fifo_n >= MAX_PICTURES || !f || !f->y.data) return;
     int w = (int)f->width, h = (int)f->height;
@@ -216,7 +212,7 @@ static void release_held(void)
 {
     if (reference_held) {
         reference_held = 0;
-        queue_picture(&dec->frame_backward, &held_info);    /* the newest reference */
+        queue_picture(mpv_frame(dec, MPV_REF_NEW), &held_info);    /* the newest reference */
     }
 }
 
@@ -227,27 +223,20 @@ static void sequence_end(void)
     update_irq_log("sequence end");
 }
 
-/* one picture through pl_mpeg; returns its type (1 I, 2 P, 3 B), 0 when the
- * data is not there yet, -1 for a picture the decoder skipped */
+/* one picture through the decoder; returns its type (1 I, 2 P, 3 B), 0 when
+ * the data is not there yet, -1 for a picture the decoder skipped. A picture
+ * is whole only once the start code of the next one has arrived (or the
+ * program has ended): decoding earlier would read a truncated picture, and
+ * every picture predicted from it would be wrong until the next I picture. */
 static int decode_one(void)
 {
-    plm_video_t *v = dec;
-    if (complete_pics <= 0 || !plm_video_has_header(v)) return 0;
-    if (v->start_code != PLM_START_PICTURE) {
-        v->start_code = plm_buffer_find_start_code(v->buffer, PLM_START_PICTURE);
-        if (v->start_code == -1) { complete_pics = 0; return 0; }
-    }
-    /* As pl_mpeg does: the whole picture is in only once the start code of
-     * the next one has arrived (or the program has ended). Decoding earlier
-     * reads a truncated picture, and every picture predicted from it is
-     * wrong until the next I picture (blocky artefacts). */
-    if (!flush_input && plm_buffer_has_start_code(v->buffer, PLM_START_PICTURE) == -1) return 0;
-    plm_buffer_discard_read_bytes(v->buffer);
-    v->picture_type = 0;
-    plm_video_decode_picture(v);
+    if (complete_pics <= 0 || !mpv_has_header(dec)) return 0;
+    int t = mpv_decode(dec, flush_input);
+    if (t == MPV_NO_PICTURE) { complete_pics = 0; return 0; }
+    if (t == MPV_WAIT) return 0;
     complete_pics--;
     if (pictures_in_input) pictures_in_input--;   /* consumed, shown or not */
-    return (v->picture_type >= 1 && v->picture_type <= 3) ? v->picture_type : -1;
+    return t > 0 ? t : -1;
 }
 
 static void decode_pending(void)
@@ -261,7 +250,7 @@ static void decode_pending(void)
         memset(&info, 0, sizeof(info));
         if (info_n) { info = info_q[0]; memmove(info_q, info_q + 1, (size_t)--info_n * sizeof(pinfo_t)); }
         if (t < 0) { if (info.ends_seq) sequence_end(); continue; }
-        info.width = (uint16_t)dec->width; info.height = (uint16_t)dec->height;
+        info.width = (uint16_t)mpv_width(dec); info.height = (uint16_t)mpv_height(dec);
         dec_w = info.width; dec_h = info.height; dec_tc = info.timecode;
         dec_rate = info.rate & 15; dec_p90 = PERIOD_90KHZ[dec_rate];
         period_30mhz = PERIOD_30MHZ[dec_rate];
@@ -270,9 +259,9 @@ static void decode_pending(void)
         if (fmv_log >= 3 || (fmv_log && ++ndec % 50 == 1))
             fprintf(stderr, "[FMV] decoded picture %lu at %.2f s: %dx%d type %d tref %d, %d queued\n", ndec,
                     (double)fmv_now / FMV_CPU_HZ, dec_w, dec_h, t, info.video_status & 0x3f, fifo_n);
-        if (t == 3) queue_picture(&dec->frame_current, &info);       /* B: shown now */
+        if (t == 3) queue_picture(mpv_frame(dec, MPV_LAST_B), &info);       /* B: shown now */
         else {
-            if (reference_held) queue_picture(&dec->frame_forward, &held_info);
+            if (reference_held) queue_picture(mpv_frame(dec, MPV_REF_OLD), &held_info);
             held_info = info;
             reference_held = 1;
         }
@@ -284,9 +273,8 @@ static void decode_pending(void)
  * the headers the status registers report */
 static void scan_es(uint8_t b)
 {
-    /* pl_mpeg recognises the start code that ends a picture only once a few
-     * more bytes follow it: decoding earlier loses the end of the picture
-     * and the next one (broken references: blocky artefacts) */
+    /* a picture counts as complete a few bytes after the start code that
+     * ends it (the timing the chip's status registers were tuned with) */
     if (close_wait && --close_wait == 0) complete_pics++;
     if (sc_kind) {
         sc_buf[sc_pos++] = b;
@@ -344,7 +332,7 @@ void fmvv_data(uint8_t b)
     mpeg_demux_byte(&demux, b, (uint8_t)(0xE0 | stream_nr));
     if (body) {
         uint8_t c = b;
-        if (plm_buffer_get_remaining(es) < 2 * 1024 * 1024) plm_buffer_write(es, &c, 1);
+        if (mpv_buffered(dec) < 2 * 1024 * 1024) mpv_write(dec, &c, 1);
         {   /* EMU_FMV_ES_DUMP=file: the video elementary stream received (tests) */
             static FILE *f = NULL; static int tried = 0;
             if (!tried) { tried = 1; if (getenv("EMU_FMV_ES_DUMP")) f = fopen(getenv("EMU_FMV_ES_DUMP"), "wb"); }
@@ -364,7 +352,7 @@ void fmvv_data(uint8_t b)
         if (fmv_log)
             fprintf(stderr, "[FMV] video program end at %.2f s: %d queued, %d in input, %d complete, %u bytes in ES, ier %04X\n",
                     (double)fmv_now / FMV_CPU_HZ, fifo_n, pictures_in_input, complete_pics,
-                    (unsigned)plm_buffer_get_remaining(es), ier);
+                    (unsigned)mpv_buffered(dec), ier);
         update_irq_log("program end");
     }
 }
@@ -490,9 +478,9 @@ void fmvv_vblank(int state)
         decode_pending();                       /* keep the decoder fed */
         static int dbg2 = 0;
         if (fmv_log >= 2 && !fifo_n && (pictures_in_input || reference_held) && ++dbg2 % 50 == 1)
-            fprintf(stderr, "[FMV] dry: %d in input, %d complete, held %d, dsp %d, header %d, start %d, %u bytes in ES\n",
-                    pictures_in_input, complete_pics, reference_held, dsp_enable, plm_video_has_header(dec),
-                    dec->start_code, (unsigned)plm_buffer_get_remaining(es));
+            fprintf(stderr, "[FMV] dry: %d in input, %d complete, held %d, dsp %d, size %dx%d, %u bytes in ES\n",
+                    pictures_in_input, complete_pics, reference_held, dsp_enable, mpv_width(dec),
+                    mpv_height(dec), (unsigned)mpv_buffered(dec));
     }
 }
 
@@ -539,7 +527,7 @@ uint16_t fmvv_read(int reg)
     case 0x2d: d = (uint16_t)display_info.timecode; break;
     case 0x2e: d = display_info.video_status; break;
     case 0x2f:  /* SYS_STS bit 13: request for bits, follows the input FIFO */
-        d = (plm_buffer_get_remaining(es) < VIDEO_FIFO_FULL || needs_data) ? 0x2000 : 0;
+        d = (mpv_buffered(dec) < VIDEO_FIFO_FULL || needs_data) ? 0x2000 : 0;
         break;
     case 0x30: d = ier; break;
     case 0x31: d = isr; isr = 0; break;          /* read clears */

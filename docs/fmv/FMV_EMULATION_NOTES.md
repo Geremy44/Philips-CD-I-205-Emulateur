@@ -82,9 +82,11 @@ déclarée en type `$90`. Le 1 Mo en `$D00000`, lui, répond au sondage.
 ## Implémentation
 
 `src/cdi_emu/core/FMV/` : `fmv.c` (carte : adresses, DMA, interruption,
-temps), `fmv_video.c` (puce vidéo, décodage pl_mpeg, ordre d'affichage),
-`fmv_audio.c` (puce audio, MP2 via pl_mpeg, rééchantillonné à 37,8 kHz),
-`mpeg_demux.c`, `pl_mpeg.h`. L'image est mélangée dans `vsd.c` à la place
+temps), `fmv_video.c` (puce vidéo, ordre d'affichage),
+`fmv_audio.c` (puce audio, rééchantillonnée à 37,8 kHz), `mpeg_demux.c`,
+`mpeg1_video.c` (décodeur d'images MPEG-1) et `mp2_audio.c` (décodeur
+MP2), écrits d'après la norme ISO 11172 (parties 2 et 3) ; leurs sources sont
+dans `SOURCES_MPEG.md`. L'image est mélangée dans `vsd.c` à la place
 du fond (`vsd_ext_on`).
 
 État au 21/11/2026 : *Journal interactif* disque 2 → vidéo décodée et
@@ -94,9 +96,8 @@ affichée à 25 images/s, son MPEG produit au bon débit (tests sans fenêtre).
 *The 7th Guest* disque 1 restait figé sur le logo Philips, sans son. Deux
 corrections :
 - Son : la piste alterne stéréo et stéréo jointe d'une trame à l'autre ;
-  pl_mpeg prenait ça pour une perte de synchro et ne décodait qu'une trame.
-  Le contrôle de `pl_mpeg.h` ne compare plus que mono / stéréo (modification
-  signalée dans le fichier).
+  l'ancien décodeur (pl_mpeg) prenait ça pour une perte de synchro et ne
+  décodait qu'une trame. `mp2_audio.c` lit chaque trame indépendamment.
 - Vidéo : le compteur d'images en attente n'était décrémenté qu'à la mise en
   file. Les images sautées ou retenues pour le réordonnancement n'étaient
   jamais décomptées, donc la fin des données (EOD) n'était jamais signalée.
@@ -141,7 +142,7 @@ Journal interactif (22/11/2026, rejeu d'une partie enregistrée) :
   parfois une image dont la fin n'était pas encore arrivée par DMA (un
   compteur d'« images complètes » en avance d'une image). Les images
   prédites à partir de cette image tronquée étaient fausses jusqu'à l'image I
-  suivante. Le décodage suit maintenant la règle de pl_mpeg : une image
+  suivante. Le décodage suit maintenant cette règle : une image
   n'est décodée que lorsque le code de début de l'image suivante est dans
   le tampon, ou en fin de séquence / de programme. Vérifié en comparant
   l'empreinte de chaque image décodée avec un décodage hors émulateur du

@@ -4,8 +4,8 @@
  *
  * Register map, status bits and start/underflow rules follow MAME's
  * gsc38gg307 device (pull request #16181, BSD-3-Clause, Alexandre Derumier,
- * from the CDi_MiSTer core). C port; layer II frames decoded by pl_mpeg
- * (MIT) and sent to the host output resampled to 37.8 kHz.
+ * from the CDi_MiSTer core). C port; layer II frames decoded by
+ * mp2_audio.c (written for this emulator from the standard) and sent to the host output resampled to 37.8 kHz.
  *
  * Portions derived from MAME: Copyright (c) Alexandre Derumier,
  * BSD-3-Clause; full notice in THIRD_PARTY_LICENSES.md at the repository root.
@@ -18,8 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PLM_NO_STDIO
-#include "pl_mpeg.h"
+#include "mp2_audio.h"
 
 #define DCLK_HZ    45000
 #define OUT_RATE   37800
@@ -42,8 +41,7 @@ static int      dropping;       /* surplus program being dropped (see fmva_data)
 #define PROGRAM_DROP_LIMIT (16 * 1024)
 static int64_t  start_time;
 static mpeg_demux_t demux;
-static plm_buffer_t *es;
-static plm_audio_t  *dec;
+static mpa_t   *dec;                  /* holds the elementary stream not decoded yet */
 static int16_t  ring[RING * 2];
 static int      r_head, r_count, src_rate = 44100;
 static double   phase;
@@ -59,10 +57,9 @@ static uint32_t fma_dclk(void) { return (uint32_t)((fmv_now - dclk_origin) * DCL
 
 static void decoder_new(void)
 {
-    if (dec) plm_audio_destroy(dec);
-    es = plm_buffer_create_with_capacity(64 * 1024);
+    if (dec) mpa_destroy(dec);
     es_written = 0; dropping = 0;
-    dec = plm_audio_create_with_buffer(es, 1);
+    dec = mpa_create();
 }
 
 static void audio_clear(void) { r_head = r_count = 0; phase = 0; }
@@ -99,20 +96,21 @@ void fmva_info(int *kbps, int *rate, int *playing)
  * Not done by default: the driver waits for its DMA with interrupts masked,
  * so a held transfer makes the CDIC lose sectors (see fmva_data). */
 #define FIFO_ROOM_LIMIT (12 * 1024)
-int fmva_wants_data(void) { return plm_buffer_get_remaining(es) < FIFO_ROOM_LIMIT; }
+int fmva_wants_data(void) { return mpa_buffered(dec) < FIFO_ROOM_LIMIT; }
 uint8_t fmva_vector(void) { return (uint8_t)ivec; }
 void fmva_poll(void) { isr |= FMA_POLL; }
 
 static void decode_pending(void)
 {
     while (r_count < 44100 / 4 && r_count + 1152 <= RING) {
-        plm_samples_t *s = plm_audio_decode(dec);
-        if (!s) break;
-        src_rate = plm_audio_get_samplerate(dec);
-        st_dec += s->count;
-        for (unsigned i = 0; i < s->count; i++) {
+        const float *s;
+        int count = mpa_decode(dec, &s);
+        if (count <= 0) break;
+        src_rate = mpa_samplerate(dec);
+        st_dec += (unsigned long)count;
+        for (int i = 0; i < count; i++) {
             int p = (r_head + r_count) % RING;
-            float l = s->interleaved[2 * i], r = s->interleaved[2 * i + 1];
+            float l = s[2 * i], r = s[2 * i + 1];
             l = l > 1.f ? 1.f : l < -1.f ? -1.f : l;
             r = r > 1.f ? 1.f : r < -1.f ? -1.f : r;
             ring[2 * p] = (int16_t)(l * 32767.f);
@@ -135,11 +133,11 @@ void fmva_data(uint8_t b)
          * the CPU with interrupts masked (the CDIC then loses sectors), so the
          * surplus is dropped instead -- a whole program at a time, from its
          * start to its end code, so that no MP2 frame is cut. */
-        if (stream_ended && !dropping && plm_buffer_get_remaining(es) > PROGRAM_DROP_LIMIT) {
+        if (stream_ended && !dropping && mpa_buffered(dec) > PROGRAM_DROP_LIMIT) {
             dropping = 1;
             if (fmv_log >= 2) fprintf(stderr, "[FMV] audio: FIFO well filled, next program dropped\n");
         }
-        if (!dropping && plm_buffer_get_remaining(es) < 64 * 1024) { plm_buffer_write(es, &b, 1); es_written++; }
+        if (!dropping && mpa_buffered(dec) < 64 * 1024) { mpa_write(dec, &b, 1); es_written++; }
         st_in++;
         if (fmv_log && st_in > 1 && fmv_now - last_data_at > FMV_CPU_HZ / 20)
             fprintf(stderr, "[FMV] audio data resumes after %.0f ms at %.2f s\n",
@@ -187,14 +185,14 @@ static void audio_tick(void)
      * two): that counts as empty only once no data has come for unf_ticks --
      * The 7th Guest waits for this underflow to loop its ambient sound, while
      * the Journal interactif's menu music goes on after a ~210 ms pause. */
-    if (plm_buffer_get_remaining(es) < MP2_FRAME_BYTES
+    if (mpa_buffered(dec) < MP2_FRAME_BYTES
         && (r_count == 0 || (r_count < 2 && fmv_now - last_data_at > unf_ticks))) {
         status |= FMA_UNF; isr |= FMA_UNF;
         status &= (uint16_t)~FMA_DEC;
         dsp_enable = 0; start_valid = 0;
         audio_clear();                           /* drop the lone sample left */
         if (fmv_log) fprintf(stderr, "[FMV] audio underflow at %.2f s: %lu bytes in, %lu samples decoded, %lu sent, %u left in ES\n",
-                             (double)fmv_now / FMV_CPU_HZ, st_in, st_dec, st_out, (unsigned)plm_buffer_get_remaining(es));
+                             (double)fmv_now / FMV_CPU_HZ, st_in, st_dec, st_out, (unsigned)mpa_buffered(dec));
         return;
     }
     /* 378 output frames, linear interpolation from the source rate */
@@ -224,7 +222,7 @@ void fmva_tick(void)
         tick_at += FMV_CPU_HZ / 100; audio_tick();
         if (fmv_log && st_in && ++n % 500 == 0)
             fprintf(stderr, "[FMV] audio at %.1f s: %lu bytes in, %lu decoded, %lu sent, %d queued, %u in ES, run %d\n",
-                    (double)fmv_now / FMV_CPU_HZ, st_in, st_dec, st_out, r_count, (unsigned)plm_buffer_get_remaining(es), dsp_enable);
+                    (double)fmv_now / FMV_CPU_HZ, st_in, st_dec, st_out, r_count, (unsigned)mpa_buffered(dec), dsp_enable);
     }
 }
 
