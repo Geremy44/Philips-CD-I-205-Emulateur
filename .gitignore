@@ -118,3 +118,7 @@ CDI-205/Regression/
 # local, jamais diffuses ; liens dans docs/fmv/SOURCES_MPEG.md
 docs/fmv/MPEG-Layer3_Bitstream_Syntax_and_Decoding_Fraunhofer_1997.pdf
 docs/fmv/Koornwinder_How_were_the_MP3_filter_coefficients_produced.pdf
+
+# Captures tirees des jeux (comparaisons locales, jamais diffusees)
+docs/hotel_mario/
+docs/fmv/journal_mpeg_test.png
