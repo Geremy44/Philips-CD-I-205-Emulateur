@@ -18,6 +18,7 @@ enum { AUDIO_SRC_CDIC = 0, AUDIO_SRC_FMV = 1, AUDIO_SOURCES = 2 };
 int  audio_out_init(void);                       /* 0 = ok */
 void audio_out_push(void *ctx, const int16_t *stereo, int frames);
 void audio_out_close(void);
+void audio_out_pause(int on);                    /* emulator paused: silence */
 
 /* Attenuation of a source (CD-i attenuators): left->left, left->right,
  * right->right, right->left, 1 dB steps, bit 7 = path off */

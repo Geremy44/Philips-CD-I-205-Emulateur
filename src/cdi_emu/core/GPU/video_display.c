@@ -225,9 +225,11 @@ static void create_menu(void)
     HWND hwnd = info.info.win.window;
     HMENU file = CreatePopupMenu(), view = CreatePopupMenu(), ctl = CreatePopupMenu();
     HMENU hw = CreatePopupMenu();
+    AppendMenuW(hw, MF_STRING, VM_FASTBOOT, L"D\u00e9marrage rapide (jusqu\u2019au menu du CD-i)");
     AppendMenuW(hw, MF_STRING, VM_FMV, L"Cartouche vidéo numérique (MPEG)");
     AppendMenuW(file, MF_STRING, VM_OPEN_DISC, L"Ouvrir un disque...\tCtrl+O");
     AppendMenuW(file, MF_STRING, VM_EJECT,     L"\u00c9jecter le disque");
+    AppendMenuW(file, MF_STRING, VM_PAUSE,     L"Pause\tPause / Ctrl+P");
     AppendMenuW(file, MF_STRING, VM_RESET,     L"R\u00e9initialiser le CD-i\tCtrl+R");
     AppendMenuW(file, MF_STRING, VM_IMPORT_ROM, L"Importer des ROM...");
     AppendMenuW(file, MF_STRING, VM_CONVERT_CHD, L"Convertir une image CHD en BIN/CUE...");
@@ -978,6 +980,11 @@ int video_display_handle_event(const void *ev)
             if (menu_cb) menu_cb(VM_OPEN_DISC);
             return 1;
         }
+        if (down && !e->key.repeat && (e->key.keysym.sym == SDLK_PAUSE ||
+            (e->key.keysym.sym == SDLK_p && (SDL_GetModState() & KMOD_CTRL)))) {
+            if (menu_cb) menu_cb(VM_PAUSE);
+            return 1;
+        }
         if (down && !e->key.repeat && e->key.keysym.sym == SDLK_r && (SDL_GetModState() & KMOD_CTRL)) {
             if (menu_cb) menu_cb(VM_RESET);
             return 1;
@@ -1092,6 +1099,50 @@ static void dump_frame_if_changed(int w, int h)
     if (video_log_on()) fprintf(stderr, "[VIDEO] frame saved to %s\n", name);
 }
 
+/* Hardware cursor shown: the shell (or a game) is up - ends the fast boot */
+int video_display_cursor_on(void) { return (vsd.cursor_ctrl & 0x800000u) != 0; }
+
+/* Last picture shown, for the pause screen (redrawn without emulating) */
+static int last_w = 0, last_h = 0, last_hi = 0, last_hw = 0, last_hh = 0;
+
+/* Pause (Fichier > Pause, key Pause): the last picture, darkened, with
+ * "PAUSE" on it; the F3 overlay and the menus stay usable. */
+void video_display_redraw_paused(void)
+{
+    if (!initialized || !last_w) return;
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    SDL_RenderClear(ren);
+    if (last_hi) {
+        SDL_Rect hr = { 0, 0, last_hw, last_hh };
+        SDL_RenderCopy(ren, hi_tex, &hr, NULL);
+    } else {
+        SDL_Rect sr = { 0, 0, last_w, last_h };
+        SDL_RenderCopy(ren, tex, &sr, NULL);
+    }
+    apply_filter(last_h);
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 110);
+    SDL_RenderFillRect(ren, NULL);
+    static TTF_Font *font = NULL;
+    static int tried = 0;
+    if (!tried) { tried = 1; font = input_ui_font(48); }
+    if (font) {
+        SDL_Color fg = { 255, 255, 255, 255 };
+        SDL_Surface *sf = TTF_RenderUTF8_Blended(font, "PAUSE", fg);
+        if (sf) {
+            int lw, lh;
+            SDL_RenderGetLogicalSize(ren, &lw, &lh);
+            if (!lw) { lw = WIN_W; lh = WIN_H; }
+            SDL_Texture *t = SDL_CreateTextureFromSurface(ren, sf);
+            SDL_Rect d = { (lw - sf->w) / 2, (lh - sf->h) / 2, sf->w, sf->h };
+            if (t) { SDL_RenderCopy(ren, t, NULL, &d); SDL_DestroyTexture(t); }
+            SDL_FreeSurface(sf);
+        }
+    }
+    stats_render(ren);
+    SDL_RenderPresent(ren);
+}
+
 int video_display_update(void *scc66470, void *bus)
 {
     if (!initialized) return 1;
@@ -1106,6 +1157,57 @@ int video_display_update(void *scc66470, void *bus)
     scc66470_render(v,  b->dram, (uint32_t)sizeof(b->dram), frame);
     scc66470_render(vb, b->dram, (uint32_t)sizeof(b->dram), frame_b);
     video_log_frame++;
+    {   /* EMU_EXIT_FRAME=n: quit after n frames (regression bench) */
+        static int exit_at = -1;
+        if (exit_at < 0) exit_at = getenv("EMU_EXIT_FRAME") ? atoi(getenv("EMU_EXIT_FRAME")) : 0;
+        if (exit_at > 0 && video_log_frame >= exit_at) { g_video_window_closed = 1; return 0; }
+    }
+    {   /* EMU_CLICKS=frame:x,y[,buttons];...: clicks at given frames (pointer
+         * units, like EMU_AUTOCLICK) - regression bench. Moved to (x,y) at
+         * the frame (gliding over the 16 frames before), pressed 2 frames
+         * later, released 20 frames after that. */
+        static int n = -1, fr[32], cx[32], cy[32], cb[32];
+        if (n < 0) {
+            n = 0;
+            const char *e = getenv("EMU_CLICKS");
+            while (e && *e && n < 32) {
+                cb[n] = 1;
+                if (sscanf(e, "%d:%d,%d,%d", &fr[n], &cx[n], &cy[n], &cb[n]) >= 3) n++;
+                e = strchr(e, ';');
+                if (e) e++;
+            }
+        }
+        for (int k = 0; k < n && pointer_cb; k++) {
+            int d = video_log_frame - fr[k];
+            if (d >= -16 && d < 0) {          /* glide there over 16 frames, like a mouse
+                                               * (some discs ignore a jump to PLAY) */
+                int t = d + 16;
+                pointer_cb(pointer_ctx, 200 + (cx[k] - 200) * t / 15, 300 + (cy[k] - 300) * t / 15, 0);
+            }
+            if (d == 0 || d == 22) pointer_cb(pointer_ctx, cx[k], cy[k], 0);   /* held 20 frames */
+            else if (d == 2) pointer_cb(pointer_ctx, cx[k], cy[k], cb[k]);
+        }
+    }
+    {   /* EMU_IMPULSES=frame:dx,dy,buttons[,count];...: relative moves (games
+         * that recentre the cursor, e.g. Asterix), one per frame from that
+         * frame, count times (tests) */
+        static int n = -1, fr[256], dx[256], dy[256], bt[256], ct[256];
+        if (n < 0) {
+            n = 0;
+            const char *e = getenv("EMU_IMPULSES");
+            while (e && *e && n < 256) {
+                ct[n] = 1;
+                if (sscanf(e, "%d:%d,%d,%d,%d", &fr[n], &dx[n], &dy[n], &bt[n], &ct[n]) >= 4) n++;
+                e = strchr(e, ';');
+                if (e) e++;
+            }
+        }
+        for (int k = 0; k < n && pointer_cb; k++) {
+            int d = video_log_frame - fr[k];
+            if (d >= 0 && d < ct[k])
+                pointer_cb(pointer_ctx, dx[k], dy[k], bt[k] | VIDEO_PTR_IMPULSE);
+        }
+    }
     {   /* EMU_RAM_DUMP=prefix,f1,f2,...: write the whole DRAM to prefix_<frame>.bin
          * at those frames (tests: find a game's variables) */
         static int nd = -1, fr[32];
@@ -1289,10 +1391,12 @@ int video_display_update(void *scc66470, void *bus)
         if (want != cur_w) { cur_w = want; SDL_RenderSetLogicalSize(ren, want, WIN_H); }
     }
     int hw, hh;
+    last_w = w; last_h = h; last_hi = 0;
     if (upscale_frame(pixels, w, h, &hw, &hh)) {  /* filters 4 / 5: CPU-upscaled first */
         SDL_Rect hr = { 0, 0, hw, hh };
         SDL_UpdateTexture(hi_tex, &hr, hi_buf, HI_W * (int)sizeof(uint32_t));
         SDL_RenderCopy(ren, hi_tex, &hr, NULL);
+        last_hi = 1; last_hw = hw; last_hh = hh;
     } else {
         SDL_SetTextureScaleMode(tex, video_filter == 0 || video_filter == 2 ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
         SDL_RenderCopy(ren, tex, &src_rect, NULL);    /* stretched to the 4:3 / 16:9 surface */

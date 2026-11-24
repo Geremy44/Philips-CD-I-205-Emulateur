@@ -28,6 +28,7 @@
 #include "core/CDIC/cdic.h"
 #include "core/os9trace.h"
 #include "core/audio_out.h"
+#include "core/options.h"
 #include "core/rtc_m48t08.h"
 #include "core/CDIC/cdrom_win.h"
 #include "core/CDIC/cdburn.h"
@@ -79,6 +80,14 @@ static int    g_save_slot  = 1;
 
 /* F7 / EMU_SWAP_BUTTONS: swap the left and right mouse buttons (default on) */
 static int g_swap_buttons = 0;
+
+/* Fichier > Pause (key Pause, Ctrl+P): the 68070 stops between two frames */
+static int g_paused = 0;
+
+/* Fast boot (Materiel menu, options.ini fastboot, on by default): no speed
+ * limit from power-on / reset until the CD-i cursor shows (shell up), at
+ * most 60 emulated seconds. The clock follows the PC, so nothing drifts. */
+static int g_fastboot = 1, g_booting = 1;
 
 static int hotkey(int fkey)
 {
@@ -430,7 +439,14 @@ static void menu_action(int id)
     case VM_IMPORT_ROM:
         import_roms_dialog();
         break;
+    case VM_FASTBOOT:
+        g_fastboot = !g_fastboot;
+        option_set("fastboot", g_fastboot);
+        video_display_menu_check(VM_FASTBOOT, g_fastboot);
+        if (!g_fastboot) g_booting = 0;
+        break;
     case VM_RESET:                                      /* reset button: warm reboot */
+        if (g_paused) menu_action(VM_PAUSE);            /* the reboot is seen */
         g_reset_request = 1;
         break;
     case VM_EJECT:
@@ -452,6 +468,12 @@ static void menu_action(int id)
     case VM_HOST_CURSOR: video_display_toggle_host_cursor(); break;
     case VM_CONSOLE:     uart_console_set_visible(!uart_console_is_visible()); break;
     case VM_SWAP:        hotkey(7); break;
+    case VM_PAUSE:
+        g_paused = !g_paused;
+        audio_out_pause(g_paused);
+        video_display_menu_check(VM_PAUSE, g_paused);
+        fprintf(stderr, "[MAIN] %s\n", g_paused ? "paused" : "resumed");
+        break;
     }
 }
 
@@ -673,6 +695,10 @@ int main(int argc, char* argv[]) {
     video_display_set_swap(g_swap_buttons);
     video_display_menu_check(VM_SWAP, g_swap_buttons);
     video_display_menu_check(VM_FMV, fmv_enabled());
+    g_fastboot = option_get("fastboot", 1);
+    if (getenv("EMU_FASTBOOT")) g_fastboot = atoi(getenv("EMU_FASTBOOT"));
+    g_booting = g_fastboot;
+    video_display_menu_check(VM_FASTBOOT, g_fastboot);
     video_display_menu_check(VM_CONSOLE, uart_console_is_visible());
 
     /* Host sound: CD-i ADPCM decoded by the CDIC */
@@ -703,10 +729,14 @@ int main(int argc, char* argv[]) {
     /* Recording / replay also freeze the clock source: the RTC starts at the
      * time written in the file header and follows the emulated cycles, so
      * a replay sees exactly the same dates as the recorded session. */
+    /* EMU_RTC_BASE=seconds since 1970: the same frozen clock without a
+     * recording (regression bench: games seed their randomness from it) */
+    if (getenv("EMU_RTC_BASE") && atoll(getenv("EMU_RTC_BASE")) > 0)
+        rtc_virtual_base = atoll(getenv("EMU_RTC_BASE"));
     if (getenv("EMU_INPUT_REC") && *getenv("EMU_INPUT_REC")) {
         g_rec = fopen(getenv("EMU_INPUT_REC"), "w");
         if (g_rec) {
-            rtc_virtual_base = (int64_t)time(NULL);
+            if (!rtc_virtual_base) rtc_virtual_base = (int64_t)time(NULL);   /* EMU_RTC_BASE kept */
             fprintf(g_rec, "# rtc %lld\n", (long long)rtc_virtual_base);
         }
         fprintf(stderr, "[INPUT] recording pointer events to '%s'\n", getenv("EMU_INPUT_REC"));
@@ -752,6 +782,7 @@ int main(int argc, char* argv[]) {
      * clock. EMU_SPEED = percent of real speed (default 100, 0 = unlimited). */
     int speed = getenv("EMU_SPEED") ? atoi(getenv("EMU_SPEED")) : 100;
     uint64_t pace_cycles0 = 0, pace_t0 = SDL_GetPerformanceCounter();
+    uint64_t boot_cycles0 = 0;                       /* fast boot started here */
     /* EMU_PACE_LOG=1: histogram of the host time between two frames */
     int pace_log = getenv("EMU_PACE_LOG") != NULL;
     long pace_hist[8] = {0};
@@ -940,6 +971,8 @@ int main(int argc, char* argv[]) {
         if (force_reset == -2) force_reset = getenv("EMU_FORCE_RESET") ? atoll(getenv("EMU_FORCE_RESET")) : -1;
         if (slave_hle_take_reset(be) || i == force_reset || g_reset_request) {
             g_reset_request = 0;
+            g_booting = g_fastboot;               /* fast again until the shell */
+            boot_cycles0 = rtc_virtual_cycles;
             fprintf(stderr, "[RESET] 68HC05 resets the 68070 (warm reboot) at step %lld\n", i);
             onchip68070_reset(onchip);
             {   /* the chips keep their wiring: the slave's ICA is at $80400 */
@@ -1059,7 +1092,26 @@ int main(int argc, char* argv[]) {
             } else st_t0 = 0;
             if (running)
                 running = video_display_update(video, bus);
-            if (speed > 0) {
+            if (g_paused && running) {
+                /* nothing emulated: menus, F-keys and the window stay alive */
+                while (g_paused && running && !g_video_window_closed) {
+                    running = uart_console_update();
+                    video_display_redraw_paused();
+                    SDL_Delay(16);
+                }
+                pace_cycles0 = rtc_virtual_cycles;          /* no catching up afterwards */
+                pace_t0 = SDL_GetPerformanceCounter();
+                st_t0 = 0;
+            }
+            if (g_booting && (video_display_cursor_on() ||
+                              rtc_virtual_cycles - boot_cycles0 > 60ull * 15000000ull)) {
+                g_booting = 0;                              /* shell up: real speed from now */
+                fprintf(stderr, "[MAIN] fast boot over (%.1f s emulated)\n",
+                        (double)(rtc_virtual_cycles - boot_cycles0) / 15e6);
+                pace_cycles0 = rtc_virtual_cycles;
+                pace_t0 = SDL_GetPerformanceCounter();
+            }
+            if (speed > 0 && !g_booting) {
                 /* emulated time (cycles / 15 MHz) vs host high-resolution clock */
                 uint64_t freq = SDL_GetPerformanceFrequency();
                 uint64_t emu_t  = (rtc_virtual_cycles - pace_cycles0) * freq / 150000u / (uint64_t)speed;
@@ -1094,6 +1146,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[MAIN] CPU loop finished (traced=%lld), keeping window open.\n", traced);
         uart_console_set_visible(1);
     }
+    if (getenv("EMU_HEADLESS") && cpu.halted) win_alive = 0;   /* tests: no one to close it */
     while (win_alive) {
         win_alive = uart_console_update();
         SDL_Delay(16);  /* ~60 fps idle */
@@ -1103,5 +1156,5 @@ int main(int argc, char* argv[]) {
     audio_out_close();
     bus_destroy(bus);
     printf("\nEmulation stopped\n");
-    return 0;
+    return cpu.halted ? 2 : 0;             /* 2: the 68070 stopped (bench: crash) */
 }

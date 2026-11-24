@@ -99,18 +99,23 @@ void video_display_message(const char *title, const char *text);
 int  video_display_choose_files(const char *title, char ***out);
 /* Show the PC cursor again (on exit) */
 void video_display_restore_host_cursor(void);
+/* pause screen: last picture darkened, "PAUSE" on it */
+void video_display_redraw_paused(void);
+/* CD-i hardware cursor enabled (the shell is on screen) */
+int  video_display_cursor_on(void);
 
 /* Menu bar of the video window (native on Windows). The callback gets the
  * command id; video_display_menu_check() sets an item's check mark. */
 enum {
     VM_QUIT = 1001, VM_SAVE, VM_LOAD, VM_NEXT_SLOT, VM_OPEN_DISC, VM_EJECT, VM_RESET,
-    VM_IMPORT_ROM, VM_CONVERT_CHD,
+    VM_IMPORT_ROM, VM_CONVERT_CHD, VM_PAUSE,
     VM_FULLSCREEN = 1101, VM_HOST_CURSOR, VM_CONSOLE,
     VM_ASPECT_43, VM_ASPECT_169, VM_FILTER0, /* VM_FILTER0 + 0..5 */
     VM_FILTER_LAST = VM_FILTER0 + 5,
     VM_OVERSCAN,             /* Affichage > edges hidden like a TV */
     VM_SWAP = 1201, VM_INPUT_CONFIG, VM_MOUSE, VM_PADS,
     VM_FMV = 1401,           /* Materiel > Digital Video Cartridge */
+    VM_FASTBOOT,             /* Materiel > fast boot (options.ini fastboot) */
     VM_DRIVE_PLAY = 1300,    /* + drive letter - 'A': play the disc in it */
     VM_DRIVE_RIP  = 1330,    /* + drive letter - 'A': rip it to .bin / .cue */
     VM_DRIVE_BURN = 1500,    /* + drive letter - 'A': burn an image on it */

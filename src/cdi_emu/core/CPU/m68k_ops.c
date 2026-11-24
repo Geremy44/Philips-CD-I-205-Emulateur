@@ -1444,9 +1444,18 @@ void m68k_step_ops(m68k_t *cpu)
      * Default: unhandled opcode
      * ================================================================ */
     default:
-        fprintf(stderr, "[M68K] OPCODE NON GERE: 0x%04X @ PC=0x%08X\n",
-            insn, cpu->pc);
-        cpu->halted = 1;
+        /* As on the real 68070: line A ($Axxx) -> vector 10, line F ($Fxxx)
+         * -> vector 11, any other unknown word -> illegal instruction
+         * (vector 4). The stacked PC is the faulting instruction; CD-RTOS
+         * then ends the process (a game that jumped into garbage). */
+        {
+            static int nlog = 0;           /* a loop on a bad vector would flood the log */
+            if (nlog < 8 && ++nlog)
+                fprintf(stderr, "[M68K] OPCODE NON GERE: 0x%04X @ PC=0x%08X%s\n",
+                    insn, cpu->pc - 2, nlog == 8 ? " (suivants non affiches)" : "");
+        }
+        cpu->pc -= 2;
+        m68k_exception(cpu, (insn >> 12) == 0xA ? 10 : (insn >> 12) == 0xF ? 11 : 4);
         return;
     }
 }

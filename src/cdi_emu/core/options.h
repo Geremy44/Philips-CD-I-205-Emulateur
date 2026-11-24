@@ -6,6 +6,7 @@
  *   filter=0..5  video filter: 0 none, 1 smooth, 2 scanlines, 3 CRT,
  *                4 sharp smooth, 5 edge smooth (F4)
  *   pads=0|1     controllers on / off (menu Controles)
+ *   fastboot=0|1 boot at full speed until the shell's cursor shows (menu Materiel)
  */
 
 #ifndef OPTIONS_H

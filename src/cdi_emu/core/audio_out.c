@@ -186,6 +186,11 @@ void audio_out_push(void *ctx, const int16_t *stereo, int frames)
     SDL_UnlockAudioDevice(dev);
 }
 
+void audio_out_pause(int on)
+{
+    if (dev) SDL_PauseAudioDevice(dev, on ? 1 : 0);
+}
+
 void audio_out_close(void)
 {
     if (wav) { wav_header(); fclose(wav); wav = NULL; }

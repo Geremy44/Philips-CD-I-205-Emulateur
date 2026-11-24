@@ -249,8 +249,13 @@ static void deliver_sector(cdic_t *c)
         /* A trigger sector ($10) reaches the driver whatever its channel:
          * cdapdriv signals the application. Hotel Mario's intro changes
          * scene on the empty channel 0 triggers of its stream (mask $8000);
-         * dropped, the backgrounds came late and then stopped changing. */
-        if (!(c->channel & (1u << chan)) && !(sm & 0x10))
+         * dropped, the backgrounds came late and then stopped changing.
+         * An end of file ($80) too: cdapdriv ends the play there. Kether's
+         * intro reads channels 1-2 and its file ends on a channel 0 $E1
+         * (LBA 138508); missed, the play ran on into the next file and
+         * overflowed the game's video buffers onto the driver's path
+         * descriptor (crash a few seconds later). */
+        if (!(c->channel & (1u << chan)) && !(sm & 0x90))
             return;
     }
 
