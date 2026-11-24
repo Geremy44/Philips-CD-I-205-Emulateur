@@ -64,11 +64,11 @@ gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/FMV/fmv.c -o bin/fmv.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
-    core/FMV/mpeg_demux.c -o bin/mpeg_demux.o
+    core/FMV/mpeg_system.c -o bin/mpeg_system.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
-    core/FMV/fmv_video.c -o bin/fmv_video.o
+    core/FMV/mcd251.c -o bin/mcd251.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
-    core/FMV/fmv_audio.c -o bin/fmv_audio.o
+    core/FMV/fma.c -o bin/fma.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^
     core/SLAVE/slave.c -o bin/slave.o
 gcc -c -O2 -I. -Icore -Icore/CPU -Icore/GPU -Icore/SLAVE -Icore/CDIC -std=c99 ^

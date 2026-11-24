@@ -75,16 +75,17 @@ déclarée en type `$90`. Le 1 Mo en `$D00000`, lui, répond au sondage.
   `ma`), vectorisée : vidéo `IVEC($E040DC) >> 3` = `$5A`, audio `$7B` ;
   l'audio est prioritaire. Lire l'ISR (`$E04062`, `$E0301A`) l'efface.
 - Registres, bits d'état (RFB, PIC, VSYNC, TIM à 100,45 Hz...) et rythme
-  d'affichage : repris de MAME, PR #16181 (mcd251, gsc38gg307, cdidvc,
-  mpeg_demux), même ROM R4.1. Chaque puce ne garde que son flux ($E0+n
+  d'affichage : décrits dans `FMV_COMPORTEMENT.md` (le travail de MAME,
+  PR #16181, sur la même ROM R4.1, a servi de référence). Chaque puce ne garde que son flux ($E0+n
   vidéo, $C0+n audio).
 
 ## Implémentation
 
 `src/cdi_emu/core/FMV/` : `fmv.c` (carte : adresses, DMA, interruption,
-temps), `fmv_video.c` (puce vidéo, décodage pl_mpeg, ordre d'affichage),
-`fmv_audio.c` (puce audio, MP2 via pl_mpeg, rééchantillonné à 37,8 kHz),
-`mpeg_demux.c`, `pl_mpeg.h`. L'image est mélangée dans `vsd.c` à la place
+temps), `mcd251.c` (puce vidéo, décodage pl_mpeg, ordre d'affichage),
+`fma.c` (puce audio, MP2 via pl_mpeg, rééchantillonné à 37,8 kHz),
+`mpeg_system.c` (lecture du flux système), `pl_mpeg.h`. Comportement
+attendu : `FMV_COMPORTEMENT.md`. L'image est mélangée dans `vsd.c` à la place
 du fond (`vsd_ext_on`).
 
 État au 21/11/2026 : *Journal interactif* disque 2 → vidéo décodée et

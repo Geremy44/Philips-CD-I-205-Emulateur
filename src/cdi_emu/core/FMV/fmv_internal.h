@@ -1,6 +1,6 @@
 /*
  * fmv_internal.h - shared between the parts of the Digital Video Cartridge
- * (fmv.c board glue, fmv_video.c MPEG video chip, fmv_audio.c audio chip)
+ * (fmv.c the board, mcd251.c the MPEG video chip, fma.c the audio chip)
  */
 
 #ifndef FMV_INTERNAL_H
