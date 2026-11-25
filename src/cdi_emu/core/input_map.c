@@ -416,26 +416,40 @@ static int action_level(int act, const Uint8 *keys)
     return best;
 }
 
-/* Movement: a press gives one impulse at once (games that read the
- * pointer as a joystick need it), holding it moves on after 12 frames;
- * analog sticks move in proportion to the deflection. */
+/* Movement. Like the CD-i thumbpad, which keeps sending while pressed, a
+ * press moves the pointer a little on every frame: games count the frames
+ * in which it moves (Secret Mission's action icons step once per ~6 moving
+ * frames: one packet per press made 2 presses out of 3 go unnoticed). A
+ * short press still lasts PULSE_FRAMES (IMPULSE units in all); held, the
+ * pointer speeds up after HOLD_FRAMES. Analog sticks move in proportion to
+ * the deflection. */
 #define IMPULSE      24
+#define PULSE_FRAMES 6
+#define PULSE_STEP   (IMPULSE / PULSE_FRAMES)
 #define HOLD_FRAMES  12
 #define HOLD_SPEED   10              /* units per frame while held */
 
 void input_map_frame(int keyboard_focus, int *dx, int *dy, int *buttons)
 {
-    static int held[4], acc[2];
+    static int held[4], pulse[4], acc[2];
     const Uint8 *keys = keyboard_focus ? SDL_GetKeyboardState(NULL) : NULL;
     int fast = action_level(ACT_FAST, keys) > 500 ? 3 : 1;
     int mv[2] = { 0, 0 };
     for (int d = 0; d < 4; d++) {                 /* up, down, left, right */
         int lvl = action_level(ACT_UP + d, keys);
         int axis = d < 2 ? 1 : 0, sign = (d & 1) ? 1 : -1;
-        if (lvl <= 0) { held[d] = 0; continue; }
+        if (lvl <= 0) {
+            held[d] = 0;
+            if (pulse[d] > 0) { pulse[d]--; mv[axis] += sign * PULSE_STEP * fast; }   /* a short press ends its pulse */
+            continue;
+        }
         if (lvl >= 1000) {                        /* digital (or stick at full tilt) */
-            if (held[d] == 0) mv[axis] += sign * IMPULSE * fast;
-            else if (held[d] >= HOLD_FRAMES) mv[axis] += sign * HOLD_SPEED * fast;
+            if (held[d] == 0) pulse[d] = PULSE_FRAMES;
+            if (held[d] >= HOLD_FRAMES) { mv[axis] += sign * HOLD_SPEED * fast; pulse[d] = 0; }
+            else {
+                mv[axis] += sign * PULSE_STEP * fast;
+                if (pulse[d] > 0) pulse[d]--;
+            }
         } else {                                  /* analog */
             acc[axis] += sign * lvl * HOLD_SPEED * fast;
         }

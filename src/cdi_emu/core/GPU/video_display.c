@@ -662,12 +662,16 @@ static int upscale_frame(const uint32_t *pix, int w, int h, int *ow, int *oh)
         *ow = 2 * w; *oh = 4 * h;
         return 1;
     }
-    /* edges: native width (pairs doubled?) -> x2 -> x2 */
-    int pairs = (w % 2) == 0;
-    for (int y = 0; y < h && pairs; y++) {
+    /* edges: is the frame 384 pixels doubled? The CD-i cursor (16 x 16) can
+     * sit on an odd pixel and break a few pairs: that alone must not switch
+     * the whole picture to the 768 path (the picture changed with every
+     * mouse move). */
+    int odd = (w % 2) ? w * h : 0;
+    for (int y = 0; y < h && odd <= 256; y++) {
         const uint32_t *s = pix + y * SCC_OUT_MAX_W;
-        for (int x = 0; x < w; x += 2) if (s[x] != s[x + 1]) { pairs = 0; break; }
+        for (int x = 0; x + 1 < w; x += 2) if (s[x] != s[x + 1]) odd++;
     }
+    int pairs = odd <= 256;
     int nw = pairs ? w / 2 : w;
     static uint32_t native[SCC_OUT_MAX_W * SCC_OUT_MAX_H];
     for (int y = 0; y < h; y++) {
@@ -677,11 +681,16 @@ static int upscale_frame(const uint32_t *pix, int w, int h, int *ow, int *oh)
         else memcpy(d, s, (size_t)w * 4);
     }
     scale2x(native, SCC_OUT_MAX_W, nw, h, hi_tmp, HI_W);              /* 2nw x 2h */
-    scale2x(hi_tmp, HI_W, 2 * nw, 2 * h, hi_buf, HI_W);               /* 4nw x 4h */
-    if (!pairs) {                       /* 768-wide content: 4x across is too wide, keep 2x */
-        for (int y = 0; y < 4 * h; y++) {
-            uint32_t *d = hi_buf + y * HI_W;
-            for (int x = 0; x < 2 * nw; x++) d[x] = d[2 * x];
+    if (pairs)
+        scale2x(hi_tmp, HI_W, 2 * nw, 2 * h, hi_buf, HI_W);           /* 4nw x 4h = 2w x 4h */
+    else {
+        /* 768-wide content: once is enough across (twice would be 4 x 768,
+         * wider than the buffer: each line ran over the next one and the
+         * picture showed two half-width copies); lines doubled down */
+        for (int y = 0; y < 2 * h; y++) {
+            const uint32_t *s = hi_tmp + y * HI_W;
+            memcpy(hi_buf + (2 * y) * HI_W, s, (size_t)w * 2 * 4);
+            memcpy(hi_buf + (2 * y + 1) * HI_W, s, (size_t)w * 2 * 4);
         }
     }
     *ow = 2 * w; *oh = 4 * h;
